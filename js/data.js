@@ -1,56 +1,59 @@
-/* Vuokratuottokartta — aineiston haku ja rakennus selaimessa.
+/* Vuokratuottokartta — aineiston haku ja rakennus.
  *
- * Sivun auetessa haetaan suoraan Tilastokeskuksen avoimista rajapinnoista:
+ * Lähteet (Tilastokeskuksen avoin data, CC BY 4.0):
  *   1. Paavo-postinumeroalueet (rajat + väkiluku + mediaanitulot), geo.stat.fi WFS
- *   2. Vanhojen osakeasuntojen neliöhinnat postinumeroalueittain, StatFin/ashi
- *   3. Keskineliövuokrat, StatFin/asvu — ensisijaisesti postinumerotasolla
+ *   2. Vanhojen osakeasuntojen neliöhinnat ja kauppamäärät postinumeroalueittain
+ *      (StatFin/ashi 13mu) sekä kunnittain (13mx) täydennykseen
+ *   3. Keskineliövuokrat (StatFin/asvu) — ensisijaisesti postinumerotasolla
  *      (aktiivinen tai arkistokanta StatFin_Passiivi), muuten kuntatasolla
- *      (taulukko 15fa), jolloin vuokra liitetään postinumeroalueeseen
- *      Paavo-aineiston kuntakoodilla
+ *      (15fa, viimeiset neljä neljännestä yhdistettynä)
  *
- * Tilastokeskus uudisti vuokratilaston 2026: postinumerotason taulukko 13eb
- * poistui ja tilalle tuli aluetason 15fa. Taulukot etsitään siksi
- * kandidaattilistoilla ja tietokantalistauksista, ja löydetyn taulukon
- * ulottuvuudet tarkistetaan metadatasta ennen käyttöä.
+ * PxWeb-rajapinnassa on pyyntömäärärajoitus (429), joten pyynnöt jonotetaan
+ * pienellä välillä, metadata ja tietokantalistaukset välimuistitetaan, ja
+ * useampi tunnusluku haetaan samasta taulukosta yhdellä kyselyllä.
+ * Taulukot etsitään tietokantalistauksen kautta, jolloin poistuneita
+ * tunnuksia ei turhaan kokeilla — tämä kestää StatFinin tunnusmuutokset.
  *
  * Valmis aineisto tallennetaan selaimen Cache API -välimuistiin (7 vrk).
- * Jos haku epäonnistuu, käytetään repossa olevaa data/areas.geojson-varatiedostoa.
+ * Jos haku epäonnistuu, käytetään repossa olevaa data/areas.geojson-tiedostoa.
  */
 var VTKData = (function () {
   "use strict";
 
   var CONFIG = {
-    wfsUrl:
-      "https://geo.stat.fi/geoserver/postialue/wfs" +
-      "?service=WFS&version=2.0.0&request=GetFeature" +
-      "&typeName=postialue:pno_tilasto" +
-      "&outputFormat=application/json&srsName=EPSG:4326" +
-      "&propertyName=posti_alue,nimi,kunta,he_vakiy,hr_mtu,geom",
+    wfsBase: "https://geo.stat.fi/geoserver/postialue/wfs",
+    // Ensisijainen taso sisältää tilastoattribuutit; pelkkä pno on varalla.
+    wfsLayers: ["postialue:pno_tilasto", "postialue:pno"],
+    // Attribuutit, jotka poimitaan jos taso ne tarjoaa.
+    wfsProps: ["posti_alue", "nimi", "kunta", "he_vakiy", "hr_mtu"],
     // PxWeb-rajapinnan juuri; tietokantapolut sen alle.
     pxwebBase: "https://pxdata.stat.fi/PxWeb/api/v1/fi",
     priceDb: "StatFin/ashi",
     rentDb: "StatFin/asvu",
     rentDbArchive: "StatFin_Passiivi/asvu",
 
-    // Vanhojen osakeasuntojen neliöhinnat postinumeroalueittain (13mu).
+    // Vanhojen osakeasuntojen neliöhinnat ja kauppamäärät postinumeroalueittain.
     priceTables: ["statfin_ashi_pxt_13mu.px", "13mu.px", "13mu"],
     priceTableTextRegex: /neli[öo]hinnat.*postinumero/i,
     priceMeasureRegex: /neli[öo]hinta|keskihinta|eur\/m2|€\/m2/i,
-    // Kauppojen lukumäärä samasta 13mu-taulukosta (kauppasuodatinta varten).
     countMeasureRegex: /lukumäär|kauppo/i,
     // Neliöhinnat kunnittain (13mx) peitettyjen alueiden täydennykseen.
     kuntaPriceTables: ["statfin_ashi_pxt_13mx.px", "13mx.px", "13mx"],
     kuntaPriceTextRegex: /neli[öo]hinnat.*kunnittain/i,
 
     // Keskineliövuokrat postinumerotasolla (13eb; poistunut aktiivikannasta,
-    // mahdollisesti arkistossa nimellä statfinpas_asvu_pxt_13eb_*).
+    // mahdollisesti arkistossa) ja aluetasolla (15fa).
     rentTables: ["statfin_asvu_pxt_13eb.px", "13eb.px", "13eb"],
     rentTableTextRegex: /keskineli[öo]vuokr|vuokr/i,
     rentArchiveTextRegex: /13eb|keskineli[öo]vuokr.*postinumero/i,
-    // Keskineliövuokrat aluetasolla (15fa: vuokraindeksi ja keskineliövuokrat).
     rentAreaTables: ["statfin_asvu_pxt_15fa.px", "15fa.px", "15fa"],
     rentAreaTextRegex: /vuokraindeksi|keskineli[öo]vuokr/i,
     rentMeasureRegex: /neli[öo]vuokra|keskivuokra|eur\/m2|€\/m2/i,
+    rentCountMeasureRegex: /lukumäär|havainto/i,
+
+    // PxWeb-pyyntöjen jonotusväli ja 429-uudelleenyritykset.
+    pxGapMs: 300,
+    pxRetries: 2,
 
     // Geometrian yksinkertaistus renderöinnin keventämiseksi (~60 m).
     simplifyTolerance: 0.0008,
@@ -64,6 +67,76 @@ var VTKData = (function () {
   var POSTAL_DIM = /postinumero/i;
   var AREA_DIM = /alue|kunta/i;
   var TIME_DIM = /vuosi|neljännes|kuukausi/i;
+
+  /* ------------------ PxWeb-pyyntöjen jonotus ------------------ */
+
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  var pxChain = Promise.resolve();
+  var pxLast = 0;
+
+  /** Jonottaa PxWeb-pyynnöt (yksi kerrallaan, pieni väli) ja yrittää
+   *  uudelleen 429-vastauksen tai verkkovirheen jälkeen. */
+  function pxJson(url, options) {
+    var run = function () { return pxAttempt(url, options, 0); };
+    var p = pxChain.then(run, run);
+    pxChain = p.catch(function () {});
+    return p;
+  }
+
+  async function pxAttempt(url, options, tryNo) {
+    var wait = pxLast + CONFIG.pxGapMs - Date.now();
+    if (wait > 0) await sleep(wait);
+    pxLast = Date.now();
+    var res;
+    try {
+      res = await fetch(url, options);
+    } catch (e) {
+      // CORS-estetty 429 näkyy selaimessa verkkovirheenä — yksi uusinta
+      // riittää; aidosti offline-tilanteessa ei kannata jäädä jonottamaan.
+      if (tryNo < 1) {
+        await sleep(2500);
+        return pxAttempt(url, options, tryNo + 1);
+      }
+      throw new Error("Verkkovirhe (" + url.split("?")[0] + ")");
+    }
+    if (res.status === 429 && tryNo < CONFIG.pxRetries) {
+      var ra = parseInt(res.headers.get("Retry-After"), 10);
+      await sleep(isFinite(ra) && ra > 0 ? ra * 1000 : 4000 * (tryNo + 1));
+      return pxAttempt(url, options, tryNo + 1);
+    }
+    if (!res.ok) throw new Error("HTTP " + res.status + " (" + url.split("?")[0] + ")");
+    return res.json();
+  }
+
+  // Metadata- ja listausvälimuistit, jotta samaa ei haeta kahdesti.
+  var metaCache = {};
+  var listingCache = {};
+
+  function getMeta(url) {
+    if (!metaCache[url]) {
+      metaCache[url] = pxJson(url).catch(function (err) {
+        delete metaCache[url];
+        throw err;
+      });
+    }
+    return metaCache[url];
+  }
+
+  /** Tietokannan taulukkolistaus; null jos listausta ei saada.
+   *  Epäonnistumista ei jätetä välimuistiin, jotta seuraava kutsu voi
+   *  yrittää uudelleen. */
+  function getListing(db) {
+    if (!(db in listingCache)) {
+      listingCache[db] = pxJson(CONFIG.pxwebBase + "/" + db).catch(function () {
+        delete listingCache[db];
+        return null;
+      });
+    }
+    return listingCache[db];
+  }
 
   /* ------------------------- Haku ------------------------- */
 
@@ -98,55 +171,56 @@ var VTKData = (function () {
   }
 
   /**
-   * Etsii toimivan taulukon: kokeilee tunnuskandidaatit järjestyksessä ja
-   * viimeisenä keinona käy tietokannan taulukkolistan läpi kuvaustekstin
-   * perusteella. Löydetyn taulukon metadatasta tarkistetaan, että vaadittu
-   * ulottuvuus (esim. Postinumero) on olemassa — pelkkä nimi ei riitä,
-   * koska StatFin nimeää taulukot uudelleen. Palauttaa { url, meta }.
+   * Etsii toimivan taulukon. Jos tietokannan listaus on saatavilla,
+   * kokeillaan vain siinä olevia tunnuksia (kandidaatit + kuvaustekstiin
+   * täsmäävät) — poistuneita taulukoita ei siis turhaan kysellä. Löydetyn
+   * taulukon metadatasta tarkistetaan vaadittu ulottuvuus.
+   * Palauttaa { url, meta }.
    */
   async function resolveTable(db, candidates, tableTextRegex, requireDim, label) {
     var errors = [];
-    var tryUrl = async function (url) {
-      var meta = await getJson(url);
-      if (!meta || !meta.variables) throw new Error("ei metadataa");
-      if (requireDim && !hasDim(meta, requireDim)) throw new Error("väärä rakenne");
-      return { url: url, meta: meta };
-    };
+    var listing = await getListing(db);
 
-    for (var i = 0; i < candidates.length; i++) {
-      try {
-        return await tryUrl(CONFIG.pxwebBase + "/" + db + "/" + candidates[i]);
-      } catch (e) {
-        errors.push(candidates[i] + ": " + e.message);
-      }
-    }
-    // Kandidaatit eivät toimineet — etsi tietokannan listauksesta.
-    try {
-      var listing = await getJson(CONFIG.pxwebBase + "/" + db);
-      var hits = (listing || []).filter(function (it) {
-        return it && it.id && tableTextRegex.test(it.text || "");
+    var ids = [];
+    if (listing) {
+      var baseOf = function (id) { return String(id).replace(/\.px$/i, "").toLowerCase(); };
+      var listIds = listing.filter(function (it) { return it && it.id; });
+      candidates.forEach(function (c) {
+        var hit = listIds.find(function (it) { return baseOf(it.id) === baseOf(c); });
+        if (hit && ids.indexOf(String(hit.id)) < 0) ids.push(String(hit.id));
       });
-      for (var j = 0; j < hits.length; j++) {
-        var ids = [hits[j].id];
-        if (!/\.px$/i.test(hits[j].id)) ids.push(hits[j].id + ".px");
-        for (var k = 0; k < ids.length; k++) {
-          try {
-            return await tryUrl(CONFIG.pxwebBase + "/" + db + "/" + ids[k]);
-          } catch (e) { /* kokeile seuraavaa */ }
+      listIds.forEach(function (it) {
+        if (tableTextRegex.test(it.text || "") && ids.indexOf(String(it.id)) < 0) {
+          ids.push(String(it.id));
         }
+      });
+      if (!ids.length) errors.push(db + ": ei sopivaa taulukkoa listauksessa");
+    } else {
+      ids = candidates.slice();
+      errors.push(db + ": listaus ei saatavilla");
+    }
+
+    for (var i = 0; i < ids.length; i++) {
+      var url = CONFIG.pxwebBase + "/" + db + "/" + ids[i];
+      try {
+        var meta = await getMeta(url);
+        if (!meta || !meta.variables) throw new Error("ei metadataa");
+        if (requireDim && !hasDim(meta, requireDim)) throw new Error("väärä rakenne");
+        return { url: url, meta: meta };
+      } catch (e) {
+        errors.push(ids[i] + ": " + e.message);
       }
-    } catch (e) {
-      errors.push(e.message);
     }
     throw new Error("Taulukkoa ei löytynyt (" + label + "): " + errors.join("; "));
   }
 
   /**
-   * Hakee taulukosta uusimman ajanjakson arvot alueittain.
-   * geoRegex määrää, mikä ulottuvuus on alue (Postinumero tai Alue/Kunta).
-   * Palauttaa { values, year, measureText, table }.
+   * Hakee taulukosta uusimman ajanjakson tunnusluvut alueittain yhdellä
+   * kyselyllä. `measures` on { avain: regex } — ensimmäinen on pakollinen,
+   * loput valinnaisia. Palauttaa { measures: {avain: Map|null}, year,
+   * measureTexts, table, db, geoRegex, tableTextRegex }.
    */
-  async function fetchPxTable(db, candidates, measureRegex, tableTextRegex, geoRegex, label) {
+  async function fetchPxTable(db, candidates, measures, tableTextRegex, geoRegex, label) {
     var resolved = await resolveTable(db, candidates, tableTextRegex, geoRegex, label);
     var url = resolved.url;
     var dims = resolved.meta.variables;
@@ -165,26 +239,34 @@ var VTKData = (function () {
 
     // Neljännesvuositaulukoista yhdistetään viimeiset neljä neljännestä
     // (keskiarvo), vuositaulukoista poimitaan uusin vuosi.
-    var timeValues;
     var quarterly = timeDim.values.some(function (v) { return /q/i.test(v); });
-    if (quarterly) {
-      timeValues = timeDim.values.slice(-4);
-    } else {
-      timeValues = [timeDim.values[timeDim.values.length - 1]];
-    }
+    var timeValues = quarterly ? timeDim.values.slice(-4)
+      : [timeDim.values[timeDim.values.length - 1]];
     var periodLabel = timeValues.length > 1
       ? timeValues[0] + "–" + timeValues[timeValues.length - 1]
       : timeValues[0];
 
-    var measureIdx = infoDim.valueTexts.findIndex(function (t) { return measureRegex.test(t); });
-    if (measureIdx < 0) {
+    // Etsi pyydetyt tunnusluvut; ensimmäinen avain on pakollinen.
+    var keys = Object.keys(measures);
+    var codesByKey = {};
+    var textsByKey = {};
+    keys.forEach(function (key) {
+      var idx = infoDim.valueTexts.findIndex(function (t) { return measures[key].test(t); });
+      if (idx >= 0) {
+        codesByKey[key] = infoDim.values[idx];
+        textsByKey[key] = infoDim.valueTexts[idx];
+      }
+    });
+    if (!(keys[0] in codesByKey)) {
       throw new Error("Tunnuslukua ei löytynyt (" + label + "). Saatavilla: " + infoDim.valueTexts.join("; "));
     }
+    var infoValues = keys.map(function (k) { return codesByKey[k]; })
+      .filter(function (v, i, a) { return v !== undefined && a.indexOf(v) === i; });
 
     var query = [
       { code: geoDim.code, selection: { filter: "all", values: ["*"] } },
       { code: timeDim.code, selection: { filter: "item", values: timeValues } },
-      { code: infoDim.code, selection: { filter: "item", values: [infoDim.values[measureIdx]] } },
+      { code: infoDim.code, selection: { filter: "item", values: infoValues } },
     ];
     // Muut ulottuvuudet (esim. Talotyyppi, Huoneluku): valitaan "yhteensä"-luokka,
     // jos sellainen on; muuten jätetään pois (PxWeb eliminoi ulottuvuuden).
@@ -196,16 +278,23 @@ var VTKData = (function () {
       }
     });
 
-    var stat = await getJson(url, {
+    var stat = await pxJson(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query: query, response: { format: "json-stat2" } }),
     });
 
+    var out = {};
+    keys.forEach(function (key) {
+      out[key] = key in codesByKey
+        ? extractMeasureMap(stat, geoDim.code, infoDim.code, codesByKey[key])
+        : null;
+    });
+
     return {
-      values: parseJsonStat2(stat, geoDim.code),
+      measures: out,
       year: periodLabel,
-      measureText: infoDim.valueTexts[measureIdx],
+      measureTexts: textsByKey,
       table: url.split("/").pop(),
       db: db,
       geoRegex: geoRegex,
@@ -214,42 +303,57 @@ var VTKData = (function () {
   }
 
   /**
-   * Poimii json-stat2-vastauksesta Map: aluekoodi -> arvo. Jos alueelle on
-   * useita arvoja (esim. neljä vuosineljännestä), niistä lasketaan
-   * keskiarvo. Jokainen arvo tallennetaan usealla avaimella (raakakoodi,
+   * Poimii json-stat2-vastauksesta yhden tunnusluvun arvot alueittain:
+   * Map aluekoodi -> arvo. Muiden ulottuvuuksien (esim. neljännesten) yli
+   * lasketaan keskiarvo. Arvo tallennetaan usealla avaimella (raakakoodi,
    * koodin numero-osa, pienaakkosin kirjoitettu nimi), jotta liitos
-   * onnistuu riippumatta siitä, missä muodossa koodit ovat.
+   * onnistuu koodimuodosta riippumatta.
    */
-  function parseJsonStat2(stat, geoCode) {
-    var dimId = stat.id.indexOf(geoCode) >= 0 ? geoCode :
+  function extractMeasureMap(stat, geoCode, infoCode, infoValueCode) {
+    var geoId = stat.id.indexOf(geoCode) >= 0 ? geoCode :
       stat.id.find(function (id) { return POSTAL_DIM.test(id) || AREA_DIM.test(id); });
-    var dim = stat.dimension[dimId];
-    var labels = (dim.category && dim.category.label) || {};
-    var codes = Object.keys(dim.category.index).sort(function (a, b) {
-      return dim.category.index[a] - dim.category.index[b];
+    var geoDim = stat.dimension[geoId];
+    var labels = (geoDim.category && geoDim.category.label) || {};
+    var codes = Object.keys(geoDim.category.index).sort(function (a, b) {
+      return geoDim.category.index[a] - geoDim.category.index[b];
     });
 
-    var pos = stat.id.indexOf(dimId);
-    var after = 1;
-    for (var i = pos + 1; i < stat.id.length; i++) after *= stat.size[i];
-    var before = 1;
-    for (var j = 0; j < pos; j++) before *= stat.size[j];
-    var geoSize = stat.size[pos];
+    // Stridet jokaiselle ulottuvuudelle.
+    var n = stat.id.length;
+    var strides = new Array(n);
+    var stride = 1;
+    for (var i = n - 1; i >= 0; i--) {
+      strides[i] = stride;
+      stride *= stat.size[i];
+    }
+    var total = stride;
+    var geoPos = stat.id.indexOf(geoId);
+
+    var infoPos = stat.id.indexOf(infoCode);
+    var infoIdx = -1;
+    if (infoPos >= 0) {
+      var infoDim = stat.dimension[stat.id[infoPos]];
+      var idxMap = infoDim.category.index;
+      infoIdx = idxMap && infoValueCode in idxMap ? idxMap[infoValueCode] : -1;
+      if (infoIdx < 0) return new Map();
+    }
+
+    var sums = new Array(codes.length).fill(0);
+    var counts = new Array(codes.length).fill(0);
+    for (var c = 0; c < total; c++) {
+      if (infoPos >= 0 &&
+          Math.floor(c / strides[infoPos]) % stat.size[infoPos] !== infoIdx) continue;
+      var v = stat.value[c];
+      if (v === null || v === undefined || !isFinite(v)) continue;
+      var g = Math.floor(c / strides[geoPos]) % stat.size[geoPos];
+      sums[g] += v;
+      counts[g]++;
+    }
 
     var out = new Map();
     codes.forEach(function (code, idx) {
-      // Kerää kaikki tämän alueen arvot (muut ulottuvuudet, esim. neljännekset).
-      var sum = 0;
-      var n = 0;
-      for (var b = 0; b < before; b++) {
-        var base = (b * geoSize + idx) * after;
-        for (var k = 0; k < after; k++) {
-          var v = stat.value[base + k];
-          if (v !== null && v !== undefined && isFinite(v)) { sum += v; n++; }
-        }
-      }
-      if (n === 0) return;
-      var mean = sum / n;
+      if (counts[idx] === 0) return;
+      var mean = sums[idx] / counts[idx];
       var raw = String(code).trim();
       out.set(raw, mean);
       var digits = raw.match(/(\d{3,5})\s*$/);
@@ -260,11 +364,15 @@ var VTKData = (function () {
   }
 
   /**
-   * Hakee keskivuokrat parhaalla saatavilla olevalla tasolla:
-   * postinumerotaso (aktiivinen tai arkisto) tai kuntataso (15fa).
+   * Hakee keskivuokrat ja vuokrahavaintomäärät parhaalla saatavilla olevalla
+   * tasolla: postinumerotaso (aktiivinen tai arkisto) tai kuntataso (15fa).
    * Palauttaa fetchPxTablen tuloksen + { level: "postinumero"|"kunta" }.
    */
   async function fetchRents() {
+    var measures = {
+      vuokra: CONFIG.rentMeasureRegex,
+      havainnot: CONFIG.rentCountMeasureRegex,
+    };
     var errors = [];
     var postalSources = [
       { db: CONFIG.rentDb, candidates: CONFIG.rentTables, textRegex: CONFIG.rentTableTextRegex },
@@ -274,8 +382,7 @@ var VTKData = (function () {
       var src = postalSources[i];
       try {
         var t = await fetchPxTable(
-          src.db, src.candidates, CONFIG.rentMeasureRegex, src.textRegex,
-          POSTAL_DIM, "keskivuokrat");
+          src.db, src.candidates, measures, src.textRegex, POSTAL_DIM, "keskivuokrat");
         t.level = "postinumero";
         return t;
       } catch (e) {
@@ -284,7 +391,7 @@ var VTKData = (function () {
     }
     try {
       var t2 = await fetchPxTable(
-        CONFIG.rentDb, CONFIG.rentAreaTables, CONFIG.rentMeasureRegex,
+        CONFIG.rentDb, CONFIG.rentAreaTables, measures,
         CONFIG.rentAreaTextRegex, AREA_DIM, "keskivuokrat, kuntataso");
       t2.level = "kunta";
       return t2;
@@ -292,6 +399,56 @@ var VTKData = (function () {
       errors.push(e.message);
       throw new Error("Vuokratietoja ei saatu: " + errors.join(" | "));
     }
+  }
+
+  /**
+   * Hakee Paavo-postinumeroalueet WFS-rajapinnasta. Attribuuttilista
+   * rakennetaan tason skeemasta (DescribeFeatureType), jotta pyyntö ei
+   * kaadu kenttänimien muutoksiin; jos skeemaa ei saada tai rajattu pyyntö
+   * epäonnistuu, haetaan taso ilman kenttärajausta.
+   */
+  async function fetchPaavo(say) {
+    var errors = [];
+    for (var i = 0; i < CONFIG.wfsLayers.length; i++) {
+      var layer = CONFIG.wfsLayers[i];
+      var common = CONFIG.wfsBase +
+        "?service=WFS&version=2.0.0&request=GetFeature" +
+        "&typeName=" + encodeURIComponent(layer) +
+        "&outputFormat=application/json&srsName=EPSG:4326";
+
+      var urls = [];
+      try {
+        var schema = await getJson(CONFIG.wfsBase +
+          "?service=WFS&version=2.0.0&request=DescribeFeatureType" +
+          "&typeName=" + encodeURIComponent(layer) +
+          "&outputFormat=application/json");
+        var ft = schema && schema.featureTypes && schema.featureTypes[0];
+        var props = (ft && ft.properties) || [];
+        var names = props.map(function (p) { return p.name; });
+        var geomProp = props.find(function (p) { return /^gml:/i.test(p.type || ""); });
+        var sel = CONFIG.wfsProps.filter(function (w) { return names.indexOf(w) >= 0; });
+        if (geomProp) sel.push(geomProp.name);
+        if (sel.length) {
+          urls.push(common + "&propertyName=" + encodeURIComponent(sel.join(",")));
+        }
+      } catch (e) {
+        errors.push(layer + " (skeema): " + e.message);
+      }
+      urls.push(common); // varalla ilman kenttärajausta (isompi lataus)
+
+      for (var j = 0; j < urls.length; j++) {
+        try {
+          var data = await getJsonWithProgress(urls[j], function (bytes) {
+            say("Ladataan postinumeroalueiden rajoja… " + (bytes / 1e6).toFixed(1) + " Mt");
+          });
+          if (data && data.features && data.features.length) return data;
+          errors.push(layer + ": tyhjä vastaus");
+        } catch (e) {
+          errors.push(layer + ": " + e.message);
+        }
+      }
+    }
+    throw new Error("Paavo-aineistoa ei saatu: " + errors.join("; "));
   }
 
   /* --------------- Geometrian yksinkertaistus --------------- */
@@ -357,74 +514,63 @@ var VTKData = (function () {
   async function buildLive(onProgress) {
     var say = onProgress || function () {};
 
-    say("Haetaan hinta- ja vuokratilastoja (Tilastokeskus)…");
-    // Pakolliset: postinumerotason hinnat ja vuokrat (parhaalla tasolla).
-    // Valinnaiset (null jos ei saada): kauppamäärät sekä kuntatason hinnat
-    // ja vuokrat peitettyjen alueiden täydennykseen.
-    var results = await Promise.all([
-      fetchPxTable(CONFIG.priceDb, CONFIG.priceTables, CONFIG.priceMeasureRegex,
-        CONFIG.priceTableTextRegex, POSTAL_DIM, "neliöhinnat"),
-      fetchRents(),
-      fetchPxTable(CONFIG.priceDb, CONFIG.priceTables, CONFIG.countMeasureRegex,
-        CONFIG.priceTableTextRegex, POSTAL_DIM, "kauppamäärät")
-        .catch(function () { return null; }),
-      fetchPxTable(CONFIG.priceDb, CONFIG.kuntaPriceTables, CONFIG.priceMeasureRegex,
-        CONFIG.kuntaPriceTextRegex, AREA_DIM, "neliöhinnat, kuntataso")
-        .catch(function () { return null; }),
-    ]);
-    var prices = results[0];
-    var rents = results[1];
-    var counts = results[2];
-    var kuntaPrices = results[3];
+    // Haut tehdään peräkkäin jonon kautta, jotta PxWeb:n pyyntömääräraja
+    // ei ylity. Hinta + kauppamäärä ja vuokra + havainnot haetaan
+    // yhdistettyinä kyselyinä.
+    say("Haetaan hintatilastoja (Tilastokeskus)…");
+    var prices = await fetchPxTable(
+      CONFIG.priceDb, CONFIG.priceTables,
+      { hinta: CONFIG.priceMeasureRegex, kaupat: CONFIG.countMeasureRegex },
+      CONFIG.priceTableTextRegex, POSTAL_DIM, "neliöhinnat");
 
-    // Vuokrahavaintojen lukumäärä samasta lähteestä kuin vuokrat (jos julkaistaan).
-    var rentCounts = await fetchPxTable(rents.db, [rents.table],
-      /lukumäär|havainto/i, rents.tableTextRegex, rents.geoRegex,
-      "vuokrahavainnot").catch(function () { return null; });
+    say("Haetaan vuokratilastoja…");
+    var rents = await fetchRents();
 
-    // Kuntatason vuokrat täydennykseen: jos vuokrat saatiin vain kuntatasolla,
-    // sama aineisto kelpaa; muuten haetaan 15fa erikseen.
+    say("Haetaan kuntatason täydennystietoja…");
+    var kuntaPrices = await fetchPxTable(
+      CONFIG.priceDb, CONFIG.kuntaPriceTables, { hinta: CONFIG.priceMeasureRegex },
+      CONFIG.kuntaPriceTextRegex, AREA_DIM, "neliöhinnat, kuntataso")
+      .catch(function () { return null; });
     var kuntaRents = rents.level === "kunta" ? rents :
-      await fetchPxTable(CONFIG.rentDb, CONFIG.rentAreaTables, CONFIG.rentMeasureRegex,
-        CONFIG.rentAreaTextRegex, AREA_DIM, "keskivuokrat, kuntataso")
+      await fetchPxTable(CONFIG.rentDb, CONFIG.rentAreaTables,
+        { vuokra: CONFIG.rentMeasureRegex }, CONFIG.rentAreaTextRegex,
+        AREA_DIM, "keskivuokrat, kuntataso")
         .catch(function () { return null; });
 
     say("Ladataan postinumeroalueiden rajoja…");
-    var paavo = await getJsonWithProgress(CONFIG.wfsUrl, function (bytes) {
-      say("Ladataan postinumeroalueiden rajoja… " + (bytes / 1e6).toFixed(1) + " Mt");
-    });
+    var paavo = await fetchPaavo(say);
 
-    var kuntaLookup = function (table, kuntaCode) {
-      if (!table) return null;
+    var lookup = function (map, key) {
+      return map && map.has(key) ? map.get(key) : null;
+    };
+    var kuntaKey = function (kuntaCode) {
       var k = String(kuntaCode || "").replace(/\D/g, "");
       while (k.length > 0 && k.length < 3) k = "0" + k;
-      return k && table.values.has(k) ? table.values.get(k) : null;
+      return k;
     };
+    var roundOrNull = function (v) { return v === null ? null : Math.round(v); };
 
     say("Rakennetaan karttaa…");
     var features = paavo.features.map(function (f) {
       var p = f.properties;
       var code = String(p.posti_alue);
       while (code.length < 5) code = "0" + code;
+      var kk = kuntaKey(p.kunta);
+      var postal = rents.level === "postinumero";
       return {
         type: "Feature",
         properties: {
           posti_alue: code,
           nimi: p.nimi || "",
           kunta: p.kunta || "",
-          hinta_m2: prices.values.has(code) ? prices.values.get(code) : null,
-          vuokra_m2: rents.level === "postinumero" && rents.values.has(code)
-            ? rents.values.get(code) : null,
-          kaupat: counts && counts.values.has(code)
-            ? Math.round(counts.values.get(code)) : null,
-          havainnot: rentCounts
-            ? (rents.level === "postinumero"
-                ? (rentCounts.values.has(code) ? Math.round(rentCounts.values.get(code)) : null)
-                : (kuntaLookup(rentCounts, p.kunta) !== null
-                    ? Math.round(kuntaLookup(rentCounts, p.kunta)) : null))
-            : null,
-          kunta_hinta_m2: kuntaLookup(kuntaPrices, p.kunta),
-          kunta_vuokra_m2: kuntaLookup(kuntaRents, p.kunta),
+          hinta_m2: lookup(prices.measures.hinta, code),
+          vuokra_m2: postal ? lookup(rents.measures.vuokra, code) : null,
+          kaupat: roundOrNull(lookup(prices.measures.kaupat, code)),
+          havainnot: roundOrNull(postal
+            ? lookup(rents.measures.havainnot, code)
+            : lookup(rents.measures.havainnot, kk)),
+          kunta_hinta_m2: kuntaPrices ? lookup(kuntaPrices.measures.hinta, kk) : null,
+          kunta_vuokra_m2: kuntaRents ? lookup(kuntaRents.measures.vuokra, kk) : null,
           vakiluku: isFinite(p.he_vakiy) ? p.he_vakiy : null,
           mediaanitulo: isFinite(p.hr_mtu) ? p.hr_mtu : null,
         },
@@ -442,8 +588,8 @@ var VTKData = (function () {
         rentLevel: rents.level,
         sources: [
           "Tilastokeskus, Paavo-postinumeroalueet (CC BY 4.0)",
-          "Tilastokeskus, StatFin " + prices.table + " (" + prices.measureText + ")",
-          "Tilastokeskus, StatFin " + rents.table + " (" + rents.measureText +
+          "Tilastokeskus, StatFin " + prices.table + " (" + prices.measureTexts.hinta + ")",
+          "Tilastokeskus, StatFin " + rents.table + " (" + rents.measureTexts.vuokra +
             (rents.level === "kunta" ? ", kuntataso" : "") + ")",
         ],
       },
