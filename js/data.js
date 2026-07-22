@@ -249,13 +249,20 @@ var VTKData = (function () {
       ? timeValues[0] + "–" + timeValues[timeValues.length - 1]
       : timeValues[0];
 
-    // Etsi pyydetyt tunnusluvut; ensimmäinen avain on pakollinen.
+    // Etsi pyydetyt tunnusluvut; ensimmäinen avain on pakollinen. Jos useampi
+    // teksti täsmää, suositaan uusinta sarjaa (esim. "vuodesta 2020 alkaen"
+    // eikä "vuoteen 2019 asti").
     var keys = Object.keys(measures);
     var codesByKey = {};
     var textsByKey = {};
     keys.forEach(function (key) {
-      var idx = infoDim.valueTexts.findIndex(function (t) { return measures[key].test(t); });
-      if (idx >= 0) {
+      var hits = [];
+      infoDim.valueTexts.forEach(function (t, i) {
+        if (measures[key].regex.test(t)) hits.push(i);
+      });
+      var idx = hits.find(function (i) { return !/asti/i.test(infoDim.valueTexts[i]); });
+      if (idx === undefined) idx = hits[0];
+      if (idx !== undefined) {
         codesByKey[key] = infoDim.values[idx];
         textsByKey[key] = infoDim.valueTexts[idx];
       }
@@ -271,14 +278,26 @@ var VTKData = (function () {
       { code: timeDim.code, selection: { filter: "item", values: timeValues } },
       { code: infoDim.code, selection: { filter: "item", values: infoValues } },
     ];
-    // Muut ulottuvuudet (esim. Talotyyppi, Huoneluku): valitaan "yhteensä"-luokka,
-    // jos sellainen on; muuten jätetään pois (PxWeb eliminoi ulottuvuuden).
+    // Muut ulottuvuudet (esim. Talotyyppi, Huoneluku): valitaan aito
+    // kokonaissummaluokka, jos sellainen on. Osasumma kuten "Rivitalot
+    // yhteensä" ei kelpaa: hyväksytään vain "Yhteensä"/"Kaikki"-alkuinen
+    // teksti tai listan ensimmäinen yhteensä-luokka (esim. "Talotyypit
+    // yhteensä"). Jos summaluokkaa ei ole, haetaan kaikki luokat ja
+    // yhdistetään ne painotettuna (ks. extractMeasures).
+    var findTotal = function (d) {
+      var texts = d.valueTexts || [];
+      for (var i = 0; i < texts.length; i++) {
+        if (/^\s*(yhteensä|kaikki)\b/i.test(texts[i])) return i;
+      }
+      if (texts.length && /yhteensä|kaikki/i.test(texts[0])) return 0;
+      return -1;
+    };
     dims.forEach(function (d) {
       if (d === geoDim || d === timeDim || d === infoDim) return;
-      var totalIdx = (d.valueTexts || []).findIndex(function (t) { return /yhteensä|kaikki/i.test(t); });
-      if (totalIdx >= 0) {
-        query.push({ code: d.code, selection: { filter: "item", values: [d.values[totalIdx]] } });
-      }
+      var totalIdx = findTotal(d);
+      query.push(totalIdx >= 0
+        ? { code: d.code, selection: { filter: "item", values: [d.values[totalIdx]] } }
+        : { code: d.code, selection: { filter: "all", values: ["*"] } });
     });
 
     // Diagnostiikka: taulukon rakenne ja tehty valinta (näkyy myös
@@ -298,11 +317,9 @@ var VTKData = (function () {
       body: JSON.stringify({ query: query, response: { format: "json-stat2" } }),
     });
 
-    var out = {};
+    var out = extractMeasures(stat, geoDim.code, infoDim.code, codesByKey, measures);
     keys.forEach(function (key) {
-      out[key] = key in codesByKey
-        ? extractMeasureMap(stat, geoDim.code, infoDim.code, codesByKey[key])
-        : null;
+      if (!(key in out)) out[key] = null;
     });
 
     return {
@@ -317,13 +334,18 @@ var VTKData = (function () {
   }
 
   /**
-   * Poimii json-stat2-vastauksesta yhden tunnusluvun arvot alueittain:
-   * Map aluekoodi -> arvo. Muiden ulottuvuuksien (esim. neljännesten) yli
-   * lasketaan keskiarvo. Arvo tallennetaan usealla avaimella (raakakoodi,
+   * Poimii json-stat2-vastauksesta tunnuslukujen arvot alueittain:
+   * { avain: Map(aluekoodi -> arvo) }.
+   *
+   * Muiden ulottuvuuksien (neljännekset, talotyypit, huoneluvut) yli
+   * yhdistetään näin: `sum: true` -tunnusluvut (lukumäärät) summataan, ja
+   * muut keskiarvoistetaan `weightBy`-tunnusluvulla painottaen (esim.
+   * neliöhinta painotetaan kauppamäärillä) — painojen puuttuessa
+   * painottamatta. Arvot tallennetaan usealla avaimella (raakakoodi,
    * koodin numero-osa, pienaakkosin kirjoitettu nimi), jotta liitos
    * onnistuu koodimuodosta riippumatta.
    */
-  function extractMeasureMap(stat, geoCode, infoCode, infoValueCode) {
+  function extractMeasures(stat, geoCode, infoCode, codesByKey, measures) {
     var geoId = stat.id.indexOf(geoCode) >= 0 ? geoCode :
       stat.id.find(function (id) { return POSTAL_DIM.test(id) || AREA_DIM.test(id); });
     var geoDim = stat.dimension[geoId];
@@ -332,47 +354,110 @@ var VTKData = (function () {
       return geoDim.category.index[a] - geoDim.category.index[b];
     });
 
-    // Stridet jokaiselle ulottuvuudelle.
     var n = stat.id.length;
+    var sizes = stat.size;
     var strides = new Array(n);
     var stride = 1;
     for (var i = n - 1; i >= 0; i--) {
       strides[i] = stride;
-      stride *= stat.size[i];
+      stride *= sizes[i];
     }
     var total = stride;
     var geoPos = stat.id.indexOf(geoId);
-
     var infoPos = stat.id.indexOf(infoCode);
-    var infoIdx = -1;
-    if (infoPos >= 0) {
-      var infoDim = stat.dimension[stat.id[infoPos]];
-      var idxMap = infoDim.category.index;
-      infoIdx = idxMap && infoValueCode in idxMap ? idxMap[infoValueCode] : -1;
-      if (infoIdx < 0) return new Map();
-    }
 
-    var sums = new Array(codes.length).fill(0);
-    var counts = new Array(codes.length).fill(0);
+    // Solmuindeksi ilman tunnuslukuulottuvuutta ("rest"): sen alla eri
+    // tunnusluvut osuvat samaan soluun ja voidaan painottaa keskenään.
+    var restStrides = new Array(n).fill(0);
+    var restStride = 1;
+    for (var j = n - 1; j >= 0; j--) {
+      if (j === infoPos) continue;
+      restStrides[j] = restStride;
+      restStride *= sizes[j];
+    }
+    var restTotal = restStride;
+    var geoRestStride = restStrides[geoPos];
+    var geoSize = sizes[geoPos];
+
+    // Tunnuslukuindeksi -> avain.
+    var keyByInfoIdx = {};
+    Object.keys(codesByKey).forEach(function (key) {
+      if (infoPos < 0) return;
+      var idxMap = stat.dimension[stat.id[infoPos]].category.index;
+      if (idxMap && codesByKey[key] in idxMap) keyByInfoIdx[idxMap[codesByKey[key]]] = key;
+    });
+
+    // Kerää arvot per avain per rest-solu.
+    var vals = {};
+    Object.keys(codesByKey).forEach(function (key) {
+      vals[key] = new Array(restTotal).fill(null);
+    });
     for (var c = 0; c < total; c++) {
-      if (infoPos >= 0 &&
-          Math.floor(c / strides[infoPos]) % stat.size[infoPos] !== infoIdx) continue;
       var v = stat.value[c];
       if (v === null || v === undefined || !isFinite(v)) continue;
-      var g = Math.floor(c / strides[geoPos]) % stat.size[geoPos];
-      sums[g] += v;
-      counts[g]++;
+      var key;
+      if (infoPos >= 0) {
+        key = keyByInfoIdx[Math.floor(c / strides[infoPos]) % sizes[infoPos]];
+        if (!key) continue;
+      } else {
+        key = Object.keys(codesByKey)[0];
+      }
+      var restIdx = 0;
+      for (var d = 0; d < n; d++) {
+        if (d === infoPos) continue;
+        restIdx += (Math.floor(c / strides[d]) % sizes[d]) * restStrides[d];
+      }
+      vals[key][restIdx] = v;
     }
 
-    var out = new Map();
-    codes.forEach(function (code, idx) {
-      if (counts[idx] === 0) return;
-      var mean = sums[idx] / counts[idx];
-      var raw = String(code).trim();
-      out.set(raw, mean);
-      var digits = raw.match(/(\d{3,5})\s*$/);
-      if (digits) out.set(digits[1], mean);
-      if (labels[code]) out.set(String(labels[code]).trim().toLowerCase(), mean);
+    // Yhdistä alueittain.
+    var out = {};
+    Object.keys(codesByKey).forEach(function (key) {
+      var spec = measures[key] || {};
+      var weightVals = spec.weightBy && vals[spec.weightBy] ? vals[spec.weightBy] : null;
+      var perGeo = new Array(codes.length).fill(null);
+      var acc = new Array(codes.length);
+      for (var g = 0; g < codes.length; g++) acc[g] = { sum: 0, wsum: 0, plain: 0, count: 0 };
+      for (var r = 0; r < restTotal; r++) {
+        var v = vals[key][r];
+        if (v === null) continue;
+        var g2 = Math.floor(r / geoRestStride) % geoSize;
+        var a = acc[g2];
+        if (spec.sum) {
+          a.sum += v;
+          a.count++;
+        } else {
+          var w = weightVals ? weightVals[r] : null;
+          if (w !== null && w > 0) {
+            a.sum += v * w;
+            a.wsum += w;
+          }
+          a.plain += v;
+          a.count++;
+        }
+      }
+      for (var g3 = 0; g3 < codes.length; g3++) {
+        var a2 = acc[g3];
+        if (a2.count === 0) continue;
+        if (spec.sum) {
+          perGeo[g3] = a2.sum;
+        } else if (a2.wsum > 0) {
+          perGeo[g3] = a2.sum / a2.wsum;
+        } else {
+          perGeo[g3] = a2.plain / a2.count;
+        }
+      }
+
+      var map = new Map();
+      codes.forEach(function (code, idx) {
+        if (perGeo[idx] === null) return;
+        var raw = String(code).trim();
+        map.set(raw, perGeo[idx]);
+        var digits = raw.match(/(\d{3,5})\s*$/);
+        if (digits) map.set(digits[1], perGeo[idx]);
+        if (labels[code]) map.set(String(labels[code]).trim().toLowerCase(), perGeo[idx]);
+      });
+      out[key] = map;
     });
     return out;
   }
@@ -384,8 +469,8 @@ var VTKData = (function () {
    */
   async function fetchRents() {
     var measures = {
-      vuokra: CONFIG.rentMeasureRegex,
-      havainnot: CONFIG.rentCountMeasureRegex,
+      vuokra: { regex: CONFIG.rentMeasureRegex, weightBy: "havainnot" },
+      havainnot: { regex: CONFIG.rentCountMeasureRegex, sum: true },
     };
     var errors = [];
     var postalSources = [
@@ -537,7 +622,8 @@ var VTKData = (function () {
     say("Haetaan hintatilastoja (Tilastokeskus)…");
     var prices = await fetchPxTable(
       CONFIG.priceDb, CONFIG.priceTables,
-      { hinta: CONFIG.priceMeasureRegex, kaupat: CONFIG.countMeasureRegex },
+      { hinta: { regex: CONFIG.priceMeasureRegex, weightBy: "kaupat" },
+        kaupat: { regex: CONFIG.countMeasureRegex, sum: true } },
       CONFIG.priceTableTextRegex, POSTAL_DIM, "neliöhinnat");
 
     say("Haetaan vuokratilastoja…");
@@ -545,12 +631,14 @@ var VTKData = (function () {
 
     say("Haetaan kuntatason täydennystietoja…");
     var kuntaPrices = await fetchPxTable(
-      CONFIG.priceDb, CONFIG.kuntaPriceTables, { hinta: CONFIG.priceMeasureRegex },
+      CONFIG.priceDb, CONFIG.kuntaPriceTables,
+      { hinta: { regex: CONFIG.priceMeasureRegex, weightBy: "kaupat" },
+        kaupat: { regex: CONFIG.countMeasureRegex, sum: true } },
       CONFIG.kuntaPriceTextRegex, AREA_DIM, "neliöhinnat, kuntataso")
       .catch(function () { return null; });
     var kuntaRents = rents.level === "kunta" ? rents :
       await fetchPxTable(CONFIG.rentDb, CONFIG.rentAreaTables,
-        { vuokra: CONFIG.rentMeasureRegex }, CONFIG.rentAreaTextRegex,
+        { vuokra: { regex: CONFIG.rentMeasureRegex } }, CONFIG.rentAreaTextRegex,
         AREA_DIM, "keskivuokrat, kuntataso")
         .catch(function () { return null; });
 
