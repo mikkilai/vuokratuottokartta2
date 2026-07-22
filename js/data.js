@@ -20,13 +20,17 @@ var VTKData = (function () {
       "&outputFormat=application/json&srsName=EPSG:4326" +
       "&propertyName=posti_alue,nimi,kunta,he_vakiy,hr_mtu,geom",
     pxwebBase: "https://pxdata.stat.fi/PxWeb/api/v1/fi/StatFin",
-    // Vanhojen osakeasuntojen hinnat postinumeroalueittain (vuositaulukko).
+    // Vanhojen osakeasuntojen neliöhinnat postinumeroalueittain (13mu, vuositaulukko).
+    // Tunnuskandidaatit kokeillaan järjestyksessä; StatFin lyhensi tunnuksia 6/2026.
     priceDb: "ashi",
-    priceTable: "statfin_ashi_pxt_13mu.px",
+    priceTables: ["statfin_ashi_pxt_13mu.px", "13mu.px", "13mu"],
+    priceTableTextRegex: /neli[öo]hinnat.*postinumero/i,
     priceMeasureRegex: /neli[öo]hinta|keskihinta|eur\/m2|€\/m2/i,
-    // Vapaarahoitteisten vuokra-asuntojen vuokrat postinumeroalueittain.
+    // Vapaarahoitteisten vuokra-asuntojen keskineliövuokrat postinumeroalueittain
+    // (13eb, neljännesvuosittain).
     rentDb: "asvu",
-    rentTable: "statfin_asvu_pxt_13beq.px",
+    rentTables: ["statfin_asvu_pxt_13eb.px", "13eb.px", "13eb"],
+    rentTableTextRegex: /(keskineli[öo]vuokrat|vuokr).*postinumero/i,
     rentMeasureRegex: /neli[öo]vuokra|keskivuokra|eur\/m2|€\/m2/i,
     // Geometrian yksinkertaistus renderöinnin keventämiseksi (~60 m).
     simplifyTolerance: 0.0008,
@@ -64,44 +68,96 @@ var VTKData = (function () {
   }
 
   /**
-   * Hakee PxWeb-taulukosta uusimman vuoden arvot postinumeroittain.
+   * Etsii toimivan taulukon: kokeilee tunnuskandidaatit järjestyksessä ja
+   * viimeisenä keinona hakee tietokannan taulukkolistan ja poimii sieltä
+   * kuvaustekstiin täsmäävän taulukon (kestää StatFinin tunnusmuutokset).
+   * Palauttaa { url, meta }.
+   */
+  async function resolveTable(db, candidates, tableTextRegex, label) {
+    var errors = [];
+    for (var i = 0; i < candidates.length; i++) {
+      var url = CONFIG.pxwebBase + "/" + db + "/" + candidates[i];
+      try {
+        var meta = await getJson(url);
+        if (meta && meta.variables) return { url: url, meta: meta };
+      } catch (e) {
+        errors.push(e.message);
+      }
+    }
+    // Kandidaatit eivät toimineet — etsi taulukko tietokannan listauksesta.
+    try {
+      var listing = await getJson(CONFIG.pxwebBase + "/" + db);
+      var hits = (listing || []).filter(function (it) {
+        return it && it.id && tableTextRegex.test(it.text || "");
+      });
+      for (var j = 0; j < hits.length; j++) {
+        var ids = [hits[j].id];
+        if (!/\.px$/i.test(hits[j].id)) ids.push(hits[j].id + ".px");
+        for (var k = 0; k < ids.length; k++) {
+          var u = CONFIG.pxwebBase + "/" + db + "/" + ids[k];
+          try {
+            var m = await getJson(u);
+            if (m && m.variables) return { url: u, meta: m };
+          } catch (e) { /* kokeile seuraavaa */ }
+        }
+      }
+    } catch (e) {
+      errors.push(e.message);
+    }
+    throw new Error("Taulukkoa ei löytynyt (" + label + "): " + errors.join("; "));
+  }
+
+  /**
+   * Hakee PxWeb-taulukosta uusimman ajanjakson arvot postinumeroittain.
    * Palauttaa { values: Map(postinumero -> €/m²), year, measureText }.
    */
-  async function fetchPxTable(db, table, measureRegex, label) {
-    var url = CONFIG.pxwebBase + "/" + db + "/" + table;
-    var meta = await getJson(url);
+  async function fetchPxTable(db, candidates, measureRegex, tableTextRegex, label) {
+    var resolved = await resolveTable(db, candidates, tableTextRegex, label);
+    var url = resolved.url;
+    var meta = resolved.meta;
 
     var dims = meta.variables;
-    var postiDim = dims.find(function (d) { return /postinumero/i.test(d.text) || /^postinumero$/i.test(d.code); });
-    var yearDim = dims.find(function (d) { return /vuosi/i.test(d.text) || /^vuosi$/i.test(d.code); });
+    var postiDim = dims.find(function (d) { return /postinumero/i.test(d.text) || /postinumero/i.test(d.code); });
+    var timeDim = dims.find(function (d) {
+      return d.time === true || /vuosi|neljännes|kuukausi/i.test(d.text) || /vuosi|nelj/i.test(d.code);
+    });
     var infoDim = dims.find(function (d) { return /tiedot/i.test(d.text) || /^tiedot$/i.test(d.code); });
-    if (!postiDim || !yearDim || !infoDim) {
-      throw new Error("Taulukon " + table + " ulottuvuuksia ei tunnistettu (" + label + ")");
+    if (!postiDim || !timeDim || !infoDim) {
+      throw new Error("Taulukon ulottuvuuksia ei tunnistettu (" + label + ")");
     }
 
-    var latestYear = yearDim.values[yearDim.values.length - 1];
+    var latest = timeDim.values[timeDim.values.length - 1];
     var measureIdx = infoDim.valueTexts.findIndex(function (t) { return measureRegex.test(t); });
     if (measureIdx < 0) {
-      throw new Error("Taulukosta " + table + " ei löytynyt tunnuslukua: " + label);
+      throw new Error("Tunnuslukua ei löytynyt (" + label + "). Saatavilla: " + infoDim.valueTexts.join("; "));
     }
+
+    var query = [
+      { code: postiDim.code, selection: { filter: "all", values: ["*"] } },
+      { code: timeDim.code, selection: { filter: "item", values: [latest] } },
+      { code: infoDim.code, selection: { filter: "item", values: [infoDim.values[measureIdx]] } },
+    ];
+    // Muut ulottuvuudet (esim. Talotyyppi, Huoneluku): valitaan "yhteensä"-luokka,
+    // jos sellainen on; muuten jätetään pois (PxWeb eliminoi ulottuvuuden).
+    dims.forEach(function (d) {
+      if (d === postiDim || d === timeDim || d === infoDim) return;
+      var totalIdx = (d.valueTexts || []).findIndex(function (t) { return /yhteensä|kaikki/i.test(t); });
+      if (totalIdx >= 0) {
+        query.push({ code: d.code, selection: { filter: "item", values: [d.values[totalIdx]] } });
+      }
+    });
 
     var stat = await getJson(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query: [
-          { code: postiDim.code, selection: { filter: "all", values: ["*"] } },
-          { code: yearDim.code, selection: { filter: "item", values: [latestYear] } },
-          { code: infoDim.code, selection: { filter: "item", values: [infoDim.values[measureIdx]] } },
-        ],
-        response: { format: "json-stat2" },
-      }),
+      body: JSON.stringify({ query: query, response: { format: "json-stat2" } }),
     });
 
     return {
       values: parseJsonStat2(stat, postiDim.code),
-      year: latestYear,
+      year: latest,
       measureText: infoDim.valueTexts[measureIdx],
+      table: url.split("/").pop(),
     };
   }
 
@@ -194,8 +250,10 @@ var VTKData = (function () {
 
     say("Haetaan hinta- ja vuokratilastoja (Tilastokeskus)…");
     var results = await Promise.all([
-      fetchPxTable(CONFIG.priceDb, CONFIG.priceTable, CONFIG.priceMeasureRegex, "neliöhinnat"),
-      fetchPxTable(CONFIG.rentDb, CONFIG.rentTable, CONFIG.rentMeasureRegex, "keskivuokrat"),
+      fetchPxTable(CONFIG.priceDb, CONFIG.priceTables, CONFIG.priceMeasureRegex,
+        CONFIG.priceTableTextRegex, "neliöhinnat"),
+      fetchPxTable(CONFIG.rentDb, CONFIG.rentTables, CONFIG.rentMeasureRegex,
+        CONFIG.rentTableTextRegex, "keskivuokrat"),
     ]);
     var prices = results[0];
     var rents = results[1];
@@ -234,8 +292,8 @@ var VTKData = (function () {
         rentYear: rents.year,
         sources: [
           "Tilastokeskus, Paavo-postinumeroalueet (CC BY 4.0)",
-          "Tilastokeskus, StatFin " + CONFIG.priceTable + " (" + prices.measureText + ")",
-          "Tilastokeskus, StatFin " + CONFIG.rentTable + " (" + rents.measureText + ")",
+          "Tilastokeskus, StatFin " + prices.table + " (" + prices.measureText + ")",
+          "Tilastokeskus, StatFin " + rents.table + " (" + rents.measureText + ")",
         ],
       },
       features: features,
