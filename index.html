@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vuokratuottokartta — vuokratuotto koko Suomesta postinumeroittain</title>
+  <meta name="description"
+        content="Selaa vanhojen osakeasuntojen brutto- ja nettovuokratuottoa postinumeroalueittain kartalla. Tilastokeskuksen virallista avointa dataa — toteutuneita kauppoja, ei pyyntihintoja. Ei mainoksia, ei kirjautumista.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231f6f43'/%3E%3Ctext x='16' y='23' font-size='18' font-family='sans-serif' font-weight='bold' text-anchor='middle' fill='white'%3E%25%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>Vuokratuottokartta</h1>
+      <p class="tagline">Vanhojen osakeasuntojen vuokratuotto postinumeroalueittain</p>
+    </div>
+    <div class="topbar-controls">
+      <div class="metric-toggle" role="group" aria-label="Näytettävä tunnusluku">
+        <button id="btn-brutto" class="toggle-btn active" type="button">Bruttotuotto</button>
+        <button id="btn-netto" class="toggle-btn" type="button">Nettotuotto</button>
+      </div>
+      <button id="btn-oletukset" class="bar-btn" type="button">Oletukset</button>
+      <button id="btn-tietoa" class="bar-btn" type="button">Tietoa</button>
+    </div>
+  </header>
+
+  <div id="demo-banner" class="demo-banner" hidden>
+    Demonäkymä: kartalla on suuntaa-antava esimerkkiaineisto. Hae Tilastokeskuksen
+    virallinen data ajamalla <code>node scripts/build-data.mjs</code>.
+    <button id="demo-banner-close" type="button" aria-label="Sulje">×</button>
+  </div>
+
+  <main class="map-wrap">
+    <div id="map" aria-label="Vuokratuottokartta"></div>
+
+    <div class="legend" id="legend" aria-hidden="true"></div>
+
+    <!-- Aluepaneeli -->
+    <aside id="area-panel" class="panel area-panel" hidden aria-label="Alueen tiedot">
+      <button class="panel-close" data-close="area-panel" type="button" aria-label="Sulje">×</button>
+      <h2 id="ap-title">–</h2>
+      <p class="muted" id="ap-subtitle">–</p>
+      <div class="yield-cards">
+        <div class="yield-card">
+          <span class="yield-label">Bruttotuotto</span>
+          <span class="yield-value" id="ap-brutto">–</span>
+        </div>
+        <div class="yield-card">
+          <span class="yield-label">Nettotuotto</span>
+          <span class="yield-value" id="ap-netto">–</span>
+        </div>
+      </div>
+      <table class="facts">
+        <tbody>
+          <tr><th>Neliöhinta</th><td id="ap-hinta">–</td></tr>
+          <tr><th>Keskineliövuokra</th><td id="ap-vuokra">–</td></tr>
+          <tr><th>Väkiluku</th><td id="ap-vakiluku">–</td></tr>
+          <tr><th>Mediaanitulot</th><td id="ap-tulo">–</td></tr>
+        </tbody>
+      </table>
+      <details class="calc-details">
+        <summary>Miten tuotto on laskettu?</summary>
+        <div id="ap-laskelma" class="calc-body"></div>
+      </details>
+      <p class="muted small">Lähde: Tilastokeskuksen avoin data — toteutuneet kaupat ja vuokrat, ei pyyntihintoja.</p>
+    </aside>
+
+    <!-- Oletukset-paneeli -->
+    <aside id="settings-panel" class="panel settings-panel" hidden aria-label="Nettotuoton oletukset">
+      <button class="panel-close" data-close="settings-panel" type="button" aria-label="Sulje">×</button>
+      <h2>Nettotuoton oletukset</h2>
+      <p class="muted small">Oletukset vaikuttavat nettotuoton laskentaan koko kartalla. Asetukset tallentuvat selaimeesi.</p>
+
+      <label class="setting">
+        <span>Hoitovastike <output id="out-vastike">4,50</output> €/m²/kk</span>
+        <input type="range" id="in-vastike" min="0" max="10" step="0.1" value="4.5">
+      </label>
+      <label class="setting">
+        <span>Vajaakäyttö <output id="out-vajaakaytto">5</output> %</span>
+        <input type="range" id="in-vajaakaytto" min="0" max="20" step="0.5" value="5">
+      </label>
+      <label class="setting">
+        <span>Varainsiirtovero <output id="out-vero">1,5</output> %</span>
+        <input type="range" id="in-vero" min="0" max="4" step="0.1" value="1.5">
+      </label>
+
+      <button id="btn-reset" class="reset-btn" type="button">Palauta oletusarvot</button>
+    </aside>
+
+    <!-- Tietoa-ikkuna -->
+    <div id="info-modal" class="modal" hidden>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="info-title">
+        <button class="panel-close" data-close="info-modal" type="button" aria-label="Sulje">×</button>
+        <h2 id="info-title">Miten se toimii?</h2>
+        <p>
+          Klikkaat aluetta kartalta ja näet neliöhinnan, keskineliövuokran, lasketun
+          brutto- ja nettotuoton sekä taustatiedot (väkiluku, mediaanitulo).
+          Nettotuoton oletukset — hoitovastike, vajaakäyttö ja varainsiirtovero —
+          saat säätää itse.
+        </p>
+        <p>
+          Kaikki data on Tilastokeskuksen virallista avointa dataa: toteutuneita
+          kauppoja ja vuokria, ei pyyntihintoja. Ei mainoksia, ei kirjautumista.
+        </p>
+        <h3>Laskentakaavat</h3>
+        <p class="formula">Bruttotuotto = (keskineliövuokra × 12) ÷ neliöhinta × 100&nbsp;%</p>
+        <p class="formula">Nettotuotto = ((vuokra × (1 − vajaakäyttö) − hoitovastike) × 12) ÷ (neliöhinta × (1 + varainsiirtovero)) × 100&nbsp;%</p>
+        <h3>Aineisto</h3>
+        <p>
+          Neliöhinnat ovat vanhojen osakeasuntojen toteutuneita kauppahintoja ja
+          vuokrat vapaarahoitteisten vuokra-asuntojen keskivuokria postinumeroalueittain
+          (Tilastokeskus, StatFin). Väkiluku ja mediaanitulot ovat Tilastokeskuksen
+          Paavo-postinumeroalueaineistosta. Alueet, joilta tilastoa ei julkaista
+          vähäisten havaintojen vuoksi, näkyvät kartalla harmaina.
+        </p>
+      </div>
+    </div>
+
+    <div id="loading" class="loading" hidden>Ladataan aineistoa…</div>
+  </main>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

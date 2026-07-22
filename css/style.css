@@ -1,0 +1,353 @@
+:root {
+  --bg: #f5f6f8;
+  --panel-bg: #ffffff;
+  --ink: #1c2733;
+  --muted: #64707d;
+  --accent: #1f6f43;
+  --border: #dde2e8;
+  --shadow: 0 6px 24px rgba(16, 24, 32, 0.16);
+  --topbar-h: 64px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- Yläpalkki --- */
+.topbar {
+  height: var(--topbar-h);
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 20px;
+  background: #14202b;
+  color: #fff;
+  z-index: 1100;
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0.2px;
+}
+
+.brand .tagline {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: #a8b6c2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.metric-toggle {
+  display: flex;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.toggle-btn {
+  border: 0;
+  background: transparent;
+  color: #cfd8e0;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.toggle-btn.active {
+  background: #fff;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.bar-btn {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.bar-btn:hover { background: rgba(255, 255, 255, 0.12); }
+
+/* --- Demobanneri --- */
+.demo-banner {
+  flex: 0 0 auto;
+  background: #fff4d6;
+  color: #6b5410;
+  border-bottom: 1px solid #eadfb8;
+  padding: 8px 44px 8px 16px;
+  font-size: 13px;
+  position: relative;
+  z-index: 1100;
+}
+
+.demo-banner code {
+  background: rgba(0, 0, 0, 0.07);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.demo-banner button {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  font-size: 18px;
+  cursor: pointer;
+  color: inherit;
+}
+
+/* --- Kartta --- */
+.map-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+  background: #dfe7ec;
+}
+
+/* --- Selite --- */
+.legend {
+  position: absolute;
+  left: 12px;
+  bottom: 24px;
+  z-index: 1000;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 12px;
+  box-shadow: var(--shadow);
+}
+
+.legend .legend-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.legend .legend-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 3px;
+}
+
+.legend .swatch {
+  width: 16px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+
+/* --- Paneelit --- */
+.panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1000;
+  width: 330px;
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+
+.panel h2 {
+  margin: 0 24px 2px 0;
+  font-size: 18px;
+}
+
+.panel-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border: 0;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+  padding: 6px;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.panel-close:hover { color: var(--ink); }
+
+.muted { color: var(--muted); margin: 0 0 10px; font-size: 13px; }
+.small { font-size: 12px; margin-top: 12px; }
+
+.yield-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.yield-card {
+  background: #f2f6f3;
+  border: 1px solid #dbe6de;
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.yield-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.yield-value { font-size: 22px; font-weight: 700; color: var(--accent); }
+
+.facts { width: 100%; border-collapse: collapse; font-size: 14px; }
+.facts th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.facts td {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.calc-details { margin-top: 12px; font-size: 13px; }
+.calc-details summary { cursor: pointer; color: var(--accent); }
+.calc-body { margin-top: 8px; color: var(--muted); }
+.calc-body p { margin: 4px 0; }
+
+/* Oletukset */
+.setting { display: block; margin: 16px 0; font-size: 14px; }
+.setting span { display: flex; justify-content: space-between; margin-bottom: 6px; }
+.setting output { font-weight: 600; font-variant-numeric: tabular-nums; }
+.setting input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+.reset-btn {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.reset-btn:hover { background: var(--bg); }
+
+/* --- Modaali --- */
+.modal[hidden] { display: none; }
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(12, 18, 24, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.modal-card {
+  position: relative;
+  background: var(--panel-bg);
+  border-radius: 14px;
+  max-width: 560px;
+  width: 100%;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 24px;
+  box-shadow: var(--shadow);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.modal-card h2 { margin-top: 0; }
+.modal-card h3 { margin: 18px 0 6px; font-size: 15px; }
+
+.formula {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Lataus --- */
+.loading {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-size: 13px;
+  box-shadow: var(--shadow);
+}
+
+/* --- Mobiili --- */
+@media (max-width: 720px) {
+  .topbar {
+    height: auto;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    row-gap: 8px;
+  }
+
+  .brand .tagline { white-space: normal; }
+
+  .panel {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-width: none;
+    max-height: 65%;
+    border-radius: 14px 14px 0 0;
+  }
+
+  .legend { bottom: 12px; }
+}
