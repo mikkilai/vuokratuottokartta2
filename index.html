@@ -7,8 +7,11 @@
   <meta name="description"
         content="Selaa vanhojen osakeasuntojen brutto- ja nettovuokratuottoa postinumeroalueittain kartalla. Tilastokeskuksen virallista avointa dataa — toteutuneita kauppoja, ei pyyntihintoja. Ei mainoksia, ei kirjautumista.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231f6f43'/%3E%3Ctext x='16' y='23' font-size='18' font-family='sans-serif' font-weight='bold' text-anchor='middle' fill='white'%3E%25%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="css/style.css">
+  <!-- ?v=-parametri sitoo tyylit ja skriptit tähän HTML-versioon, jotta
+       selaimen välimuisti ei sekoita eri julkaisujen tiedostoja keskenään.
+       Kasvata numeroa aina, kun css/js muuttuu. -->
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css?v=3">
+  <link rel="stylesheet" href="css/style.css?v=3">
 </head>
 <body>
   <header class="topbar">
@@ -166,8 +169,8 @@
     <div id="loading" class="loading" hidden>Ladataan aineistoa…</div>
   </main>
 
-  <script src="vendor/leaflet/leaflet.js"></script>
-  <script src="js/data.js"></script>
-  <script src="js/app.js"></script>
+  <script src="vendor/leaflet/leaflet.js?v=3"></script>
+  <script src="js/data.js?v=3"></script>
+  <script src="js/app.js?v=3"></script>
 </body>
 </html>
