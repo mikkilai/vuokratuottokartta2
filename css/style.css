@@ -137,7 +137,7 @@ body {
 #map {
   position: absolute;
   inset: 0;
-  background: #dfe7ec;
+  background: #e9eae8; /* Positron-taustakartan sävy tiilien latautuessa */
 }
 
 /* --- Selite --- */

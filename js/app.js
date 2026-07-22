@@ -287,9 +287,12 @@
 
   function init() {
     map = L.map("map", { zoomSnap: 0.5 }).setView([64.5, 26.0], 5.5);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 18,
+    // Harmaasävyinen taustakartta (CartoDB Positron), jotta tuottovärit erottuvat.
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+      maxZoom: 19,
+      subdomains: "abcd",
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' +
+        ' &copy; <a href="https://carto.com/attributions">CARTO</a>' +
         ' | Tilastot: <a href="https://stat.fi/">Tilastokeskus</a> (CC BY 4.0)',
     }).addTo(map);
 
