@@ -94,6 +94,11 @@ const features = AREAS.map(([posti, nimi, kunta, lat, lon, hinta, vuokra, vakilu
     kunta,
     hinta_m2: hinta,
     vuokra_m2: vuokra,
+    // Karkeat demomäärät väkiluvusta johdettuna.
+    kaupat: Math.round(vakiluku / 150),
+    havainnot: Math.round(vakiluku / 60),
+    kunta_hinta_m2: Math.round(hinta * 0.85),
+    kunta_vuokra_m2: Math.round(vuokra * 0.92 * 10) / 10,
     vakiluku,
     mediaanitulo: tulo,
   },
