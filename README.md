@@ -25,33 +25,31 @@ ja avaa <http://localhost:8000>.
 
 ## Data
 
-Repossa on mukana pieni **demo-aineisto** (`data/areas.geojson`,
-42 suuntaa-antavaa esimerkkialuetta), jotta kartta toimii heti.
-Demonäkymästä kerrotaan bannerissa.
+Aineisto haetaan ja rakennetaan **selaimessa sivun auetessa** suoraan
+Tilastokeskuksen avoimista rajapinnoista (`js/data.js`):
 
-Koko Suomen kattava virallinen aineisto haetaan ja rakennetaan yhdellä
-komennolla (vaatii Node 18+ ja verkkoyhteyden):
-
-```bash
-node scripts/build-data.mjs
-```
-
-Skripti
-
-1. hakee Paavo-postinumeroalueiden rajat, väkiluvun ja mediaanitulot
-   Tilastokeskuksen WFS-rajapinnasta (`geo.stat.fi`),
-2. hakee vanhojen osakeasuntojen neliöhinnat (StatFin/ashi) ja
+1. Paavo-postinumeroalueiden rajat, väkiluku ja mediaanitulot
+   WFS-rajapinnasta (`geo.stat.fi`),
+2. vanhojen osakeasuntojen neliöhinnat (StatFin/ashi) ja
    vapaarahoitteisten vuokra-asuntojen keskineliövuokrat (StatFin/asvu)
-   postinumeroalueittain uusimmalta tilastovuodelta,
-3. yhdistää aineistot, yksinkertaistaa geometrian
-   (Ramer–Douglas–Peucker) ja kirjoittaa `data/areas.geojson`.
+   postinumeroalueittain uusimmalta tilastovuodelta (`pxdata.stat.fi`),
+3. aineistot yhdistetään postinumerolla ja geometria yksinkertaistetaan
+   (Ramer–Douglas–Peucker) renderöinnin keventämiseksi.
 
-StatFin-taulukoiden tunnukset on määritelty skriptin alun `CONFIG`-osiossa.
-Jos Tilastokeskus muuttaa taulukkorakennetta, skripti tulostaa
-virhetilanteessa tietokannan taulukkolistan, josta oikean tunnuksen voi
-poimia ja päivittää.
+Valmis aineisto tallennetaan selaimen Cache API -välimuistiin
+seitsemäksi vuorokaudeksi, joten raskas haku tehdään vain kerran.
+Välimuistin voi tyhjentää selaimen konsolissa: `VTKData.clearCache()`.
 
-Demo-aineiston voi generoida uudelleen komennolla
+Jos haku epäonnistuu (ei verkkoa, rajapinta nurin), sovellus näyttää
+repossa olevan varatiedoston `data/areas.geojson` (42 suuntaa-antavaa
+demoaluetta) ja kertoo siitä bannerissa.
+
+StatFin-taulukoiden tunnukset on määritelty `js/data.js`-tiedoston
+`CONFIG`-osiossa.
+
+Saman aineiston voi rakentaa myös etukäteen komennolla
+`node scripts/build-data.mjs` (Node 18+), joka kirjoittaa
+`data/areas.geojson`-varatiedoston; demoversion generoi
 `node scripts/make-demo-data.mjs`.
 
 ## Laskentakaavat
@@ -74,11 +72,12 @@ tallentuvat selaimen localStorageen):
 ```
 index.html            Sovelluksen runko
 css/style.css         Tyylit
+js/data.js            Aineiston haku ja rakennus selaimessa (Tilastokeskus)
 js/app.js             Karttalogiikka (vanilla JS + Leaflet)
 vendor/leaflet/       Leaflet 1.9.4 (vendoroitu)
-data/areas.geojson    Aineisto (demo tai build-data.mjs:n tuottama)
-scripts/build-data.mjs     Virallisen aineiston haku ja rakennus
-scripts/make-demo-data.mjs Demo-aineiston generointi
+data/areas.geojson    Varatiedosto, jos livehaku epäonnistuu (demo)
+scripts/build-data.mjs     Aineiston rakennus etukäteen (valinnainen)
+scripts/make-demo-data.mjs Demo-varatiedoston generointi
 ```
 
 ## Lisenssit
