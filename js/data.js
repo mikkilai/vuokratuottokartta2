@@ -24,8 +24,11 @@ var VTKData = (function () {
     wfsBase: "https://geo.stat.fi/geoserver/postialue/wfs",
     // Ensisijainen taso sisältää tilastoattribuutit; pelkkä pno on varalla.
     wfsLayers: ["postialue:pno_tilasto", "postialue:pno"],
-    // Attribuutit, jotka poimitaan jos taso ne tarjoaa.
-    wfsProps: ["posti_alue", "nimi", "kunta", "he_vakiy", "hr_mtu"],
+    // Attribuutit, jotka poimitaan jos taso ne tarjoaa. Postinumerokentän
+    // nimi on vaihdellut, joten mukaan otetaan lisäksi kaikki skeeman
+    // kentät, joiden nimessä on "posti" tai "pnro" (ks. fetchPaavo).
+    wfsProps: ["posti_alue", "postinumeroalue", "pnro", "posti", "postinro",
+      "nimi", "name", "namn", "kunta", "kuntanro", "he_vakiy", "hr_mtu"],
     // PxWeb-rajapinnan juuri; tietokantapolut sen alle.
     pxwebBase: "https://pxdata.stat.fi/PxWeb/api/v1/fi",
     priceDb: "StatFin/ashi",
@@ -58,7 +61,7 @@ var VTKData = (function () {
     // Geometrian yksinkertaistus renderöinnin keventämiseksi (~60 m).
     simplifyTolerance: 0.0008,
     coordDecimals: 4,
-    cacheName: "vtk-data-v2",
+    cacheName: "vtk-data-v3",
     cacheUrl: "/__vtk__/areas.json",
     cacheMaxAgeMs: 7 * 24 * 3600 * 1000,
     fallbackUrl: "data/areas.geojson",
@@ -427,6 +430,9 @@ var VTKData = (function () {
         var names = props.map(function (p) { return p.name; });
         var geomProp = props.find(function (p) { return /^gml:/i.test(p.type || ""); });
         var sel = CONFIG.wfsProps.filter(function (w) { return names.indexOf(w) >= 0; });
+        names.forEach(function (n) {
+          if (/posti|pnro/i.test(n) && sel.indexOf(n) < 0) sel.push(n);
+        });
         if (geomProp) sel.push(geomProp.name);
         if (sel.length) {
           urls.push(common + "&propertyName=" + encodeURIComponent(sel.join(",")));
@@ -550,19 +556,43 @@ var VTKData = (function () {
     };
     var roundOrNull = function (v) { return v === null ? null : Math.round(v); };
 
+    // Postinumerokentän nimi on vaihdellut Paavo-aineistossa — tunnista se
+    // datasta: ensin tutuilla nimillä, sitten kenttä, jonka arvo on viiden
+    // numeron merkkijono. Viimeinen varakeino on featuren id (esim.
+    // "pno_tilasto.00100").
+    var postalKey = (function () {
+      var f0 = paavo.features.find(function (f) { return f && f.properties; });
+      if (!f0) return null;
+      var keys = Object.keys(f0.properties);
+      var isCode = function (v) { return typeof v === "string" && /^\d{5}$/.test(v.trim()); };
+      var named = keys.find(function (k) {
+        return /posti|pnro/i.test(k) && isCode(f0.properties[k]);
+      });
+      if (named) return named;
+      return keys.find(function (k) { return isCode(f0.properties[k]); }) || null;
+    })();
+    var postalOf = function (f) {
+      var v = postalKey ? String(f.properties[postalKey] || "").trim() : "";
+      if (/^\d{1,5}$/.test(v)) {
+        while (v.length < 5) v = "0" + v;
+        return v;
+      }
+      var m = String(f.id || "").match(/(\d{5})(?!.*\d)/);
+      return m ? m[1] : "";
+    };
+
     say("Rakennetaan karttaa…");
     var features = paavo.features.map(function (f) {
       var p = f.properties;
-      var code = String(p.posti_alue);
-      while (code.length < 5) code = "0" + code;
+      var code = postalOf(f);
       var kk = kuntaKey(p.kunta);
       var postal = rents.level === "postinumero";
       return {
         type: "Feature",
         properties: {
           posti_alue: code,
-          nimi: p.nimi || "",
-          kunta: p.kunta || "",
+          nimi: p.nimi || p.name || p.namn || "",
+          kunta: p.kunta || p.kuntanro || "",
           hinta_m2: lookup(prices.measures.hinta, code),
           vuokra_m2: postal ? lookup(rents.measures.vuokra, code) : null,
           kaupat: roundOrNull(lookup(prices.measures.kaupat, code)),

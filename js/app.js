@@ -221,7 +221,7 @@
 
     return (
       '<div class="area-popup">' +
-      "<h3>" + esc(p.posti_alue) + " " + esc(p.nimi || "") + "</h3>" +
+      "<h3>" + (p.posti_alue ? esc(p.posti_alue) + " " : "") + esc(p.nimi || "") + "</h3>" +
       '<p class="popup-sub">' + esc(p.kunta ? "Kunta " + p.kunta : "") + "</p>" +
       '<div class="popup-yields">' +
       '<div class="popup-yield"><span>Bruttotuotto</span><b>' + fmtPct(brutto) + "</b></div>" +
