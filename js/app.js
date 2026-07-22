@@ -299,25 +299,35 @@
 
     var loading = document.getElementById("loading");
     loading.hidden = false;
-    fetch("data/areas.geojson")
-      .then(function (res) {
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        return res.json();
-      })
-      .then(function (geojson) {
+    loading.textContent = "Ladataan aineistoa…";
+    VTKData.load(function (msg) { loading.textContent = msg; })
+      .then(function (result) {
         loading.hidden = true;
-        if (geojson.metadata && geojson.metadata.demo) {
-          document.getElementById("demo-banner").hidden = false;
-        }
+        var geojson = result.data;
+        showDataBanner(result);
         geoLayer = L.geoJSON(geojson, { style: style, onEachFeature: onEachFeature }).addTo(map);
         try {
           map.fitBounds(geoLayer.getBounds(), { padding: [20, 20] });
         } catch (e) { /* tyhjä aineisto */ }
       })
       .catch(function (err) {
-        loading.textContent = "Aineiston lataus epäonnistui: " + err.message +
-          ". Aja node scripts/make-demo-data.mjs tai scripts/build-data.mjs.";
+        loading.textContent = "Aineiston lataus epäonnistui: " + err.message;
       });
+  }
+
+  function showDataBanner(result) {
+    var banner = document.getElementById("demo-banner");
+    var text = document.getElementById("demo-banner-text");
+    var isDemo = result.data.metadata && result.data.metadata.demo;
+    if (result.source === "fallback" || isDemo) {
+      text.textContent =
+        "Tilastokeskuksen rajapintaan ei juuri nyt saatu yhteyttä, joten kartalla " +
+        "näytetään suuntaa-antava esimerkkiaineisto. Lataa sivu myöhemmin uudelleen." +
+        (result.error ? " (" + result.error + ")" : "");
+      banner.hidden = false;
+    } else {
+      banner.hidden = true;
+    }
   }
 
   init();

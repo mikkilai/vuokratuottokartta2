@@ -27,8 +27,7 @@
   </header>
 
   <div id="demo-banner" class="demo-banner" hidden>
-    Demonäkymä: kartalla on suuntaa-antava esimerkkiaineisto. Hae Tilastokeskuksen
-    virallinen data ajamalla <code>node scripts/build-data.mjs</code>.
+    <span id="demo-banner-text"></span>
     <button id="demo-banner-close" type="button" aria-label="Sulje">×</button>
   </div>
 
@@ -115,6 +114,11 @@
           Paavo-postinumeroalueaineistosta. Alueet, joilta tilastoa ei julkaista
           vähäisten havaintojen vuoksi, näkyvät kartalla harmaina.
         </p>
+        <p>
+          Aineisto haetaan Tilastokeskuksen avoimista rajapinnoista suoraan
+          selaimessa sivun auetessa ja tallennetaan selaimen välimuistiin
+          seitsemäksi vuorokaudeksi, joten raskas haku tehdään vain kerran.
+        </p>
       </div>
     </div>
 
@@ -122,6 +126,7 @@
   </main>
 
   <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="js/data.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
