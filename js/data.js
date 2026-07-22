@@ -281,6 +281,17 @@ var VTKData = (function () {
       }
     });
 
+    // Diagnostiikka: taulukon rakenne ja tehty valinta (näkyy myös
+    // Actions-lokissa, mikä helpottaa StatFin-muutosten selvittämistä).
+    console.log("[VTK] " + label + ": " + url.split("/").pop() +
+      " | dims: " + dims.map(function (d) {
+        return d.code + "(" + (d.valueTexts || []).slice(0, 4).join("; ") +
+          ((d.valueTexts || []).length > 4 ? "; …" : "") + ")";
+      }).join(" · ") +
+      " | valinta: " + JSON.stringify(query.map(function (q) {
+        return q.code + "=" + q.selection.values.slice(0, 5).join(",");
+      })));
+
     var stat = await pxJson(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
