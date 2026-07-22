@@ -1,14 +1,24 @@
 /* Vuokratuottokartta — postinumeroalueiden vuokratuotto kartalla.
- * Vanilla JS + Leaflet. Data: data/areas.geojson (ks. scripts/build-data.mjs). */
+ * Vanilla JS + Leaflet. Data: VTKData (js/data.js). */
 (function () {
   "use strict";
 
-  var DEFAULTS = { vastike: 4.5, vajaakaytto: 5, vero: 1.5 };
-  var STORAGE_KEY = "vtk-oletukset";
+  var DEFAULTS = {
+    vastike: 4.5,
+    vajaakaytto: 5,
+    vero: 1.5,
+    paaomavero: false,
+    paaomaveroPct: 30,
+    minBrutto: 0,
+    minKaupat: 0,
+    fillKunta: true,
+  };
+  var STORAGE_KEY = "vtk-asetukset";
 
   // Väriasteikko tuotolle (%). Alarajat nousevassa järjestyksessä.
   var BINS = [
-    { min: 8, color: "#0b5c2e", label: "yli 8 %" },
+    { min: 10, color: "#084c24", label: "yli 10 %" },
+    { min: 8, color: "#0b5c2e", label: "8–10 %" },
     { min: 7, color: "#1f7a3f", label: "7–8 %" },
     { min: 6, color: "#4d9a55", label: "6–7 %" },
     { min: 5, color: "#8dbb6c", label: "5–6 %" },
@@ -17,10 +27,12 @@
     { min: -Infinity, color: "#d97b4f", label: "alle 3 %" },
   ];
   var NO_DATA_COLOR = "#b6bec6";
+  var SCALE_MIN = 2; // gradienttipalkin asteikko popupissa
+  var SCALE_MAX = 11;
 
   var state = {
     metric: "brutto",
-    assumptions: loadAssumptions(),
+    settings: loadSettings(),
     selectedId: null,
   };
 
@@ -28,21 +40,59 @@
 
   /* ---------- Laskenta ---------- */
 
-  function bruttoTuotto(p) {
-    if (!isFinite(p.hinta_m2) || !isFinite(p.vuokra_m2) || p.hinta_m2 <= 0) return null;
-    return (p.vuokra_m2 * 12) / p.hinta_m2 * 100;
+  /** Palauttaa alueen laskennassa käytettävät arvot ja tiedon siitä,
+   *  onko peitetty tieto täydennetty kuntatason keskiarvolla. */
+  function effective(p) {
+    var s = state.settings;
+    var hinta = isFinite(p.hinta_m2) && p.hinta_m2 !== null ? p.hinta_m2 : null;
+    var vuokra = isFinite(p.vuokra_m2) && p.vuokra_m2 !== null ? p.vuokra_m2 : null;
+    var hintaKunta = false;
+    var vuokraKunta = false;
+    if (s.fillKunta) {
+      if (hinta === null && isFinite(p.kunta_hinta_m2) && p.kunta_hinta_m2 !== null) {
+        hinta = p.kunta_hinta_m2;
+        hintaKunta = true;
+      }
+      if (vuokra === null && isFinite(p.kunta_vuokra_m2) && p.kunta_vuokra_m2 !== null) {
+        vuokra = p.kunta_vuokra_m2;
+        vuokraKunta = true;
+      }
+    }
+    return { hinta: hinta, vuokra: vuokra, hintaKunta: hintaKunta, vuokraKunta: vuokraKunta };
   }
 
-  function nettoTuotto(p) {
-    if (!isFinite(p.hinta_m2) || !isFinite(p.vuokra_m2) || p.hinta_m2 <= 0) return null;
-    var a = state.assumptions;
-    var vuosituotto = (p.vuokra_m2 * (1 - a.vajaakaytto / 100) - a.vastike) * 12;
-    var hankintahinta = p.hinta_m2 * (1 + a.vero / 100);
-    return vuosituotto / hankintahinta * 100;
+  function bruttoTuotto(eff) {
+    if (eff.hinta === null || eff.vuokra === null || eff.hinta <= 0) return null;
+    return (eff.vuokra * 12) / eff.hinta * 100;
+  }
+
+  function nettoTuotto(eff) {
+    if (eff.hinta === null || eff.vuokra === null || eff.hinta <= 0) return null;
+    var s = state.settings;
+    var vuosituotto = (eff.vuokra * (1 - s.vajaakaytto / 100) - s.vastike) * 12;
+    var hankintahinta = eff.hinta * (1 + s.vero / 100);
+    var netto = vuosituotto / hankintahinta * 100;
+    if (s.paaomavero && netto > 0) netto *= 1 - s.paaomaveroPct / 100;
+    return netto;
+  }
+
+  /** Suodattimet: palauttaa true, jos alue rajataan harmaaksi. */
+  function isFiltered(p, eff) {
+    var s = state.settings;
+    var brutto = bruttoTuotto(eff);
+    if (brutto !== null && brutto < s.minBrutto) return true;
+    // Kauppasuodatin koskee vain alueita, joilla on postinumerotason hintatieto.
+    if (s.minKaupat > 0 && p.hinta_m2 !== null) {
+      var kaupat = isFinite(p.kaupat) && p.kaupat !== null ? p.kaupat : 0;
+      if (kaupat < s.minKaupat) return true;
+    }
+    return false;
   }
 
   function metricValue(p) {
-    return state.metric === "brutto" ? bruttoTuotto(p) : nettoTuotto(p);
+    var eff = effective(p);
+    if (isFiltered(p, eff)) return null;
+    return state.metric === "brutto" ? bruttoTuotto(eff) : nettoTuotto(eff);
   }
 
   function colorFor(value) {
@@ -62,33 +112,42 @@
 
   function fmtEur(v, unit) {
     if (v === null || v === undefined || !isFinite(v)) return "–";
-    return v.toLocaleString("fi-FI", { maximumFractionDigits: v < 100 ? 2 : 0 }) + " " + unit;
+    return v.toLocaleString("fi-FI", { maximumFractionDigits: v < 100 ? 2 : 0 }) + (unit ? " " + unit : "");
   }
 
   function fmtInt(v) {
     if (v === null || v === undefined || !isFinite(v)) return "–";
-    return v.toLocaleString("fi-FI");
+    return Math.round(v).toLocaleString("fi-FI");
   }
 
-  /* ---------- Oletukset ---------- */
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
 
-  function loadAssumptions() {
+  /* ---------- Asetukset ---------- */
+
+  function loadSettings() {
+    var out = Object.assign({}, DEFAULTS);
     try {
       var saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (saved && typeof saved === "object") {
-        return {
-          vastike: isFinite(saved.vastike) ? saved.vastike : DEFAULTS.vastike,
-          vajaakaytto: isFinite(saved.vajaakaytto) ? saved.vajaakaytto : DEFAULTS.vajaakaytto,
-          vero: isFinite(saved.vero) ? saved.vero : DEFAULTS.vero,
-        };
+        Object.keys(DEFAULTS).forEach(function (k) {
+          if (typeof DEFAULTS[k] === "boolean") {
+            if (typeof saved[k] === "boolean") out[k] = saved[k];
+          } else if (isFinite(saved[k])) {
+            out[k] = saved[k];
+          }
+        });
       }
     } catch (e) { /* ei tallennettuja asetuksia */ }
-    return Object.assign({}, DEFAULTS);
+    return out;
   }
 
-  function saveAssumptions() {
+  function saveSettings() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.assumptions));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.settings));
     } catch (e) { /* yksityinen selaus tms. */ }
   }
 
@@ -107,9 +166,7 @@
 
   function onEachFeature(feature, layer) {
     layer.on("click", function () {
-      state.selectedId = feature.properties.posti_alue;
-      geoLayer.setStyle(style);
-      showAreaPanel(feature.properties);
+      selectArea(feature.properties.posti_alue, layer, false);
     });
     layer.on("mouseover", function () {
       if (feature.properties.posti_alue !== state.selectedId) {
@@ -125,6 +182,59 @@
     );
   }
 
+  function selectArea(id, layer, zoom) {
+    state.selectedId = id;
+    geoLayer.setStyle(style);
+    if (zoom) {
+      try { map.fitBounds(layer.getBounds(), { padding: [60, 60], maxZoom: 12 }); } catch (e) { /* ok */ }
+    }
+    layer.unbindPopup();
+    layer.bindPopup(popupHtml(layer.feature.properties), { maxWidth: 300 }).openPopup();
+  }
+
+  /* ---------- Popup ---------- */
+
+  function popupHtml(p) {
+    var eff = effective(p);
+    var brutto = bruttoTuotto(eff);
+    var netto = nettoTuotto(eff);
+
+    var kuntaMark = '<span class="kuntataso" title="Täydennetty kuntatason keskiarvolla"> (kuntataso)</span>';
+    var rows = "";
+    var row = function (label, value) {
+      rows += "<tr><th>" + label + "</th><td>" + value + "</td></tr>";
+    };
+    row("Neliöhinta", fmtEur(eff.hinta, "€/m²") + (eff.hintaKunta ? kuntaMark : ""));
+    row("Keskineliövuokra", fmtEur(eff.vuokra, "€/m²/kk") + (eff.vuokraKunta ? kuntaMark : ""));
+    row("Kauppoja", fmtInt(p.kaupat));
+    row("Vuokrahavaintoja", fmtInt(p.havainnot));
+    row("Väkiluku", fmtInt(p.vakiluku));
+    row("Mediaanitulot", p.mediaanitulo ? fmtInt(p.mediaanitulo) + " €/v" : "–");
+
+    var scale = "";
+    if (brutto !== null) {
+      var pct = Math.max(0, Math.min(1, (brutto - SCALE_MIN) / (SCALE_MAX - SCALE_MIN))) * 100;
+      scale =
+        '<div class="scale-bar"><div class="scale-marker" style="left:' + pct.toFixed(1) + '%"></div></div>' +
+        '<div class="scale-caption"><span>' + SCALE_MIN + ' %</span><span>bruttotuotto</span><span>' + SCALE_MAX + ' %</span></div>';
+    }
+
+    return (
+      '<div class="area-popup">' +
+      "<h3>" + esc(p.posti_alue) + " " + esc(p.nimi || "") + "</h3>" +
+      '<p class="popup-sub">' + esc(p.kunta ? "Kunta " + p.kunta : "") + "</p>" +
+      '<div class="popup-yields">' +
+      '<div class="popup-yield"><span>Bruttotuotto</span><b>' + fmtPct(brutto) + "</b></div>" +
+      '<div class="popup-yield"><span>Nettotuotto</span><b>' + fmtPct(netto) + "</b></div>" +
+      "</div>" +
+      "<table>" + rows + "</table>" +
+      scale +
+      "</div>"
+    );
+  }
+
+  /* ---------- Selite ---------- */
+
   function renderLegend() {
     var el = document.getElementById("legend");
     var title = state.metric === "brutto" ? "Bruttotuotto" : "Nettotuotto";
@@ -134,132 +244,150 @@
         b.color + '"></span>' + b.label + "</div>";
     });
     html += '<div class="legend-row"><span class="swatch" style="background:' +
-      NO_DATA_COLOR + '"></span>ei tilastoa</div>';
+      NO_DATA_COLOR + '"></span>ei tilastoa / suodatettu</div>';
     el.innerHTML = html;
   }
 
   function refresh() {
-    if (geoLayer) geoLayer.setStyle(style);
-    renderLegend();
-    if (state.selectedId && geoLayer) {
+    if (geoLayer) {
+      geoLayer.setStyle(style);
       geoLayer.eachLayer(function (layer) {
-        if (layer.feature.properties.posti_alue === state.selectedId) {
-          updateAreaPanel(layer.feature.properties);
+        if (layer.getPopup() && layer.isPopupOpen()) {
+          layer.setPopupContent(popupHtml(layer.feature.properties));
         }
       });
     }
+    renderLegend();
   }
 
-  /* ---------- Aluepaneeli ---------- */
+  /* ---------- Haku ---------- */
 
-  function showAreaPanel(p) {
-    updateAreaPanel(p);
-    document.getElementById("settings-panel").hidden = true;
-    document.getElementById("area-panel").hidden = false;
+  function findArea(query) {
+    if (!geoLayer) return null;
+    var q = query.trim().toLowerCase();
+    if (!q) return null;
+    var exact = null, prefix = null, name = null;
+    geoLayer.eachLayer(function (layer) {
+      var p = layer.feature.properties;
+      var code = String(p.posti_alue);
+      var nimi = String(p.nimi || "").toLowerCase();
+      if (!exact && code === q) exact = layer;
+      if (!prefix && /^\d{2,5}$/.test(q) && code.indexOf(q) === 0) prefix = layer;
+      if (!name && nimi.indexOf(q) >= 0) name = layer;
+    });
+    return exact || prefix || name;
   }
 
-  function updateAreaPanel(p) {
-    var a = state.assumptions;
-    setText("ap-title", p.posti_alue + " " + (p.nimi || ""));
-    setText("ap-subtitle", p.kunta || "");
-    setText("ap-brutto", fmtPct(bruttoTuotto(p)));
-    setText("ap-netto", fmtPct(nettoTuotto(p)));
-    setText("ap-hinta", fmtEur(p.hinta_m2, "€/m²"));
-    setText("ap-vuokra", fmtEur(p.vuokra_m2, "€/m²/kk"));
-    setText("ap-vakiluku", fmtInt(p.vakiluku));
-    setText("ap-tulo", p.mediaanitulo ? fmtInt(p.mediaanitulo) + " €/v" : "–");
-
-    var calcEl = document.getElementById("ap-laskelma");
-    if (isFinite(p.hinta_m2) && isFinite(p.vuokra_m2)) {
-      calcEl.innerHTML =
-        "<p>Brutto: (" + fmtEur(p.vuokra_m2, "€") + " × 12) ÷ " +
-        fmtEur(p.hinta_m2, "€") + " = <strong>" + fmtPct(bruttoTuotto(p)) + "</strong></p>" +
-        "<p>Netto: ((" + fmtEur(p.vuokra_m2, "€") + " × " +
-        (1 - a.vajaakaytto / 100).toLocaleString("fi-FI", { maximumFractionDigits: 3 }) +
-        " − " + fmtEur(a.vastike, "€") + ") × 12) ÷ (" + fmtEur(p.hinta_m2, "€") + " × " +
-        (1 + a.vero / 100).toLocaleString("fi-FI", { maximumFractionDigits: 3 }) +
-        ") = <strong>" + fmtPct(nettoTuotto(p)) + "</strong></p>" +
-        "<p>Oletukset: hoitovastike " + fmtEur(a.vastike, "€/m²/kk") +
-        ", vajaakäyttö " + fmtPct(a.vajaakaytto).replace(" %", " %") +
-        ", varainsiirtovero " + fmtPct(a.vero).replace(" %", " %") + ".</p>";
+  function doSearch() {
+    var input = document.getElementById("in-haku");
+    var status = document.getElementById("haku-status");
+    var layer = findArea(input.value);
+    if (layer) {
+      status.hidden = true;
+      selectArea(layer.feature.properties.posti_alue, layer, true);
     } else {
-      calcEl.innerHTML = "<p>Alueelta ei julkaista hinta- tai vuokratilastoa vähäisten havaintojen vuoksi.</p>";
+      status.textContent = "Ei osumia haulle “" + input.value.trim() + "”.";
+      status.hidden = false;
     }
   }
 
-  function setText(id, text) {
-    document.getElementById(id).textContent = text;
-  }
+  /* ---------- Asetusten UI ---------- */
 
-  /* ---------- Oletukset-UI ---------- */
+  var SLIDERS = [
+    // [input, output, avain, desimaalit, yksikkö]
+    ["in-minbrutto", "out-minbrutto", "minBrutto", 1, " %"],
+    ["in-minkaupat", "out-minkaupat", "minKaupat", 0, ""],
+    ["in-vastike", "out-vastike", "vastike", 1, " €/m²/kk"],
+    ["in-vajaakaytto", "out-vajaakaytto", "vajaakaytto", 0, " %"],
+    ["in-vero", "out-vero", "vero", 1, " %"],
+  ];
 
-  function bindSetting(inputId, outputId, key, decimals) {
-    var input = document.getElementById(inputId);
-    var output = document.getElementById(outputId);
-    input.value = state.assumptions[key];
-    output.textContent = state.assumptions[key].toLocaleString("fi-FI", {
-      minimumFractionDigits: decimals, maximumFractionDigits: decimals,
-    });
-    input.addEventListener("input", function () {
-      state.assumptions[key] = parseFloat(input.value);
-      output.textContent = state.assumptions[key].toLocaleString("fi-FI", {
-        minimumFractionDigits: decimals, maximumFractionDigits: decimals,
-      });
-      saveAssumptions();
-      refresh();
-    });
+  function renderSliderValue(row) {
+    var value = state.settings[row[2]];
+    document.getElementById(row[1]).textContent =
+      value.toLocaleString("fi-FI", {
+        minimumFractionDigits: row[3], maximumFractionDigits: row[3],
+      }) + row[4];
+    document.getElementById(row[0]).value = value;
   }
 
   function initSettings() {
-    bindSetting("in-vastike", "out-vastike", "vastike", 2);
-    bindSetting("in-vajaakaytto", "out-vajaakaytto", "vajaakaytto", 1);
-    bindSetting("in-vero", "out-vero", "vero", 1);
-    document.getElementById("btn-reset").addEventListener("click", function () {
-      state.assumptions = Object.assign({}, DEFAULTS);
-      saveAssumptions();
-      initSettingValues();
+    SLIDERS.forEach(function (row) {
+      renderSliderValue(row);
+      document.getElementById(row[0]).addEventListener("input", function () {
+        state.settings[row[2]] = parseFloat(this.value);
+        renderSliderValue(row);
+        saveSettings();
+        refresh();
+      });
+    });
+
+    var fill = document.getElementById("in-taydenna");
+    fill.checked = state.settings.fillKunta;
+    fill.addEventListener("change", function () {
+      state.settings.fillKunta = fill.checked;
+      saveSettings();
       refresh();
     });
-  }
 
-  function initSettingValues() {
-    [["in-vastike", "out-vastike", "vastike", 2],
-     ["in-vajaakaytto", "out-vajaakaytto", "vajaakaytto", 1],
-     ["in-vero", "out-vero", "vero", 1]].forEach(function (row) {
-      var input = document.getElementById(row[0]);
-      var output = document.getElementById(row[1]);
-      input.value = state.assumptions[row[2]];
-      output.textContent = state.assumptions[row[2]].toLocaleString("fi-FI", {
-        minimumFractionDigits: row[3], maximumFractionDigits: row[3],
-      });
+    var pvero = document.getElementById("in-paaomavero");
+    var pveroPct = document.getElementById("in-paaomavero-pct");
+    pvero.checked = state.settings.paaomavero;
+    pveroPct.value = String(state.settings.paaomaveroPct);
+    pvero.addEventListener("change", function () {
+      state.settings.paaomavero = pvero.checked;
+      saveSettings();
+      refresh();
+    });
+    pveroPct.addEventListener("change", function () {
+      state.settings.paaomaveroPct = parseFloat(pveroPct.value);
+      saveSettings();
+      refresh();
     });
   }
 
   /* ---------- Yleis-UI ---------- */
 
+  function setMetric(metric) {
+    state.metric = metric;
+    ["btn-brutto", "btn-brutto-panel"].forEach(function (id) {
+      document.getElementById(id).classList.toggle("active", metric === "brutto");
+    });
+    ["btn-netto", "btn-netto-panel"].forEach(function (id) {
+      document.getElementById(id).classList.toggle("active", metric === "netto");
+    });
+    refresh();
+  }
+
   function initUi() {
-    document.getElementById("btn-brutto").addEventListener("click", function () {
-      setMetric("brutto");
+    ["btn-brutto", "btn-brutto-panel"].forEach(function (id) {
+      document.getElementById(id).addEventListener("click", function () { setMetric("brutto"); });
     });
-    document.getElementById("btn-netto").addEventListener("click", function () {
-      setMetric("netto");
+    ["btn-netto", "btn-netto-panel"].forEach(function (id) {
+      document.getElementById(id).addEventListener("click", function () { setMetric("netto"); });
     });
+
     document.getElementById("btn-oletukset").addEventListener("click", function () {
       var panel = document.getElementById("settings-panel");
-      var wasHidden = panel.hidden;
-      panel.hidden = !wasHidden;
-      if (!panel.hidden) document.getElementById("area-panel").hidden = true;
+      panel.hidden = !panel.hidden;
+      if (!panel.hidden) document.getElementById("in-haku").focus();
     });
     document.getElementById("btn-tietoa").addEventListener("click", function () {
       document.getElementById("info-modal").hidden = false;
     });
+    document.getElementById("link-tietoa").addEventListener("click", function (e) {
+      e.preventDefault();
+      document.getElementById("info-modal").hidden = false;
+    });
+
+    document.getElementById("btn-haku").addEventListener("click", doSearch);
+    document.getElementById("in-haku").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") doSearch();
+    });
+
     document.querySelectorAll("[data-close]").forEach(function (btn) {
       btn.addEventListener("click", function () {
         document.getElementById(btn.getAttribute("data-close")).hidden = true;
-        if (btn.getAttribute("data-close") === "area-panel") {
-          state.selectedId = null;
-          if (geoLayer) geoLayer.setStyle(style);
-        }
       });
     });
     document.getElementById("info-modal").addEventListener("click", function (e) {
@@ -276,45 +404,6 @@
     });
   }
 
-  function setMetric(metric) {
-    state.metric = metric;
-    document.getElementById("btn-brutto").classList.toggle("active", metric === "brutto");
-    document.getElementById("btn-netto").classList.toggle("active", metric === "netto");
-    refresh();
-  }
-
-  /* ---------- Käynnistys ---------- */
-
-  function init() {
-    map = L.map("map", { zoomSnap: 0.5 }).setView([64.5, 26.0], 5.5);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 18,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' +
-        ' | Tilastot: <a href="https://stat.fi/">Tilastokeskus</a> (CC BY 4.0)',
-    }).addTo(map);
-
-    initUi();
-    initSettings();
-    renderLegend();
-
-    var loading = document.getElementById("loading");
-    loading.hidden = false;
-    loading.textContent = "Ladataan aineistoa…";
-    VTKData.load(function (msg) { loading.textContent = msg; })
-      .then(function (result) {
-        loading.hidden = true;
-        var geojson = result.data;
-        showDataBanner(result);
-        geoLayer = L.geoJSON(geojson, { style: style, onEachFeature: onEachFeature }).addTo(map);
-        try {
-          map.fitBounds(geoLayer.getBounds(), { padding: [20, 20] });
-        } catch (e) { /* tyhjä aineisto */ }
-      })
-      .catch(function (err) {
-        loading.textContent = "Aineiston lataus epäonnistui: " + err.message;
-      });
-  }
-
   function showDataBanner(result) {
     var banner = document.getElementById("demo-banner");
     var text = document.getElementById("demo-banner-text");
@@ -328,6 +417,40 @@
     } else {
       banner.hidden = true;
     }
+  }
+
+  /* ---------- Käynnistys ---------- */
+
+  function init() {
+    map = L.map("map", { zoomSnap: 0.5 }).setView([64.5, 26.0], 5.5);
+    // Harmaasävyinen taustakartta (CartoDB Positron), jotta tuottovärit erottuvat.
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+      maxZoom: 19,
+      subdomains: "abcd",
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' +
+        ' &copy; <a href="https://carto.com/attributions">CARTO</a>' +
+        ' | Tilastot: <a href="https://stat.fi/">Tilastokeskus</a> (CC BY 4.0)',
+    }).addTo(map);
+
+    initUi();
+    initSettings();
+    renderLegend();
+
+    var loading = document.getElementById("loading");
+    loading.hidden = false;
+    loading.textContent = "Ladataan aineistoa…";
+    VTKData.load(function (msg) { loading.textContent = msg; })
+      .then(function (result) {
+        loading.hidden = true;
+        showDataBanner(result);
+        geoLayer = L.geoJSON(result.data, { style: style, onEachFeature: onEachFeature }).addTo(map);
+        try {
+          map.fitBounds(geoLayer.getBounds(), { padding: [20, 20] });
+        } catch (e) { /* tyhjä aineisto */ }
+      })
+      .catch(function (err) {
+        loading.textContent = "Aineiston lataus epäonnistui: " + err.message;
+      });
   }
 
   init();
